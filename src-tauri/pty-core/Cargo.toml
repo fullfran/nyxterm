@@ -1,0 +1,11 @@
+[package]
+name = "nyxterm-pty-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+portable-pty = "0.9"
+thiserror = "2"
+
+[dev-dependencies]
+mockall = "0.13"
