@@ -26,32 +26,43 @@ export function TerminalPane() {
   const fitRef = useRef<FitAddon | null>(null);
 
   useEffect(() => {
+    console.log("[nyxterm] TerminalPane mount");
     const { term, fit } = createTerm();
     term.open(containerRef.current!);
     fit.fit();
     termRef.current = term;
     fitRef.current = fit;
+    console.log("[nyxterm] xterm opened", { cols: term.cols, rows: term.rows });
 
     let disposed = false;
 
-    void (async () => {
-      const id = await ptyOpen(term.cols, term.rows, null, {
-        onData: (bytes) => term.write(bytes),
-        onExit: (code) => term.writeln(`\r\n[exit ${code}]`),
-      });
+    (async () => {
+      try {
+        const id = await ptyOpen(term.cols, term.rows, null, {
+          onData: (bytes) => term.write(bytes),
+          onExit: (code) => term.writeln(`\r\n[exit ${code}]`),
+        });
+        console.log("[nyxterm] pty_open returned id=", id);
 
-      if (disposed) {
-        await ptyClose(id);
-        return;
+        if (disposed) {
+          await ptyClose(id);
+          return;
+        }
+
+        sessionIdRef.current = id;
+        term.onData((data) => {
+          void ptyWrite(id, data).catch((e) =>
+            console.error("[nyxterm] pty_write failed", e),
+          );
+        });
+      } catch (e) {
+        console.error("[nyxterm] pty_open failed:", e);
+        term.writeln(`\r\n\x1b[31m[nyxterm] pty_open failed: ${e}\x1b[0m`);
       }
-
-      sessionIdRef.current = id;
-      term.onData((data) => {
-        void ptyWrite(id, data);
-      });
     })();
 
     return () => {
+      console.log("[nyxterm] TerminalPane unmount");
       disposed = true;
       const id = sessionIdRef.current;
       if (id != null) void ptyClose(id);
