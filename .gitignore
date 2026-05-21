@@ -1,0 +1,39 @@
+# Rust / Cargo
+/target/
+src-tauri/target/
+**/*.rs.bk
+Cargo.lock.bak
+
+# Node / pnpm / bun
+node_modules/
+dist/
+.pnpm-store/
+.bun/
+*.tsbuildinfo
+
+# Tauri
+src-tauri/gen/
+src-tauri/WixTools/
+
+# Nix
+result
+result-*
+.direnv/
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+*.swp
+*.swo
+.nvim.lua
+
+# Logs and caches
+*.log
+.cache/
+.tmp/
+
+# SDD scratch and skill-registry cache (local-only, auto-generated)
+/.atl/
