@@ -2187,7 +2187,9 @@ dependencies = [
 name = "nyxterm"
 version = "0.1.0"
 dependencies = [
+ "dirs",
  "nyxterm-pty-core",
+ "portable-pty",
  "serde",
  "serde_json",
  "tauri",

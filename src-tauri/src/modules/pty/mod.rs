@@ -1,3 +1,5 @@
-// Re-export core types for use in Tauri state management.
+// Re-export core types for Tauri state management.
 pub use nyxterm_pty_core::{error::PtyError, state::PtyState};
-// commands module added in T1.3
+
+mod commands;
+pub use commands::{pty_close, pty_open, pty_write};
