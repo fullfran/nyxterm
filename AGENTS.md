@@ -5,7 +5,7 @@
 
 ## What this project is
 
-`nyxterm` is an AI-native terminal emulator. Tauri 2 backend (Rust + `portable-pty`), React + TypeScript frontend with xterm.js, Tokyo Night theme, and a Pi-style embedded AI harness as a first-class panel. Eventually it also embeds non-terminal panes (webviews, libmpv players) so the user can reduce browser dependence.
+`nyxterm` is an AI-native terminal emulator. Tauri 2 backend (Rust + `portable-pty`), React + TypeScript frontend with xterm.js, Tokyo Night theme, and [Pi (`@earendil-works/pi-*`)](https://github.com/earendil-works/pi) embedded as the AI harness — first-class panel. Eventually it also embeds non-terminal panes (webviews, libmpv players) so the user can reduce browser dependence.
 
 Read [`README.md`](./README.md) for the user-facing pitch and [`ROADMAP.md`](./ROADMAP.md) for phase planning.
 
@@ -69,7 +69,7 @@ The depth lives in [`.agents/skills/`](./.agents/skills/). Each is a `SKILL.md` 
 | [pty-handling](./.agents/skills/pty-handling/SKILL.md) | PTY gotchas: SIGWINCH, ConPTY race, OSC, DA filter, coalescing |
 | [theming](./.agents/skills/theming/SKILL.md) | Tokyo Night palette, theme API, no hardcoded colors |
 | [multiplexing](./.agents/skills/multiplexing/SKILL.md) | Splits, panes, vi copy-mode, prefix `Ctrl+Space` |
-| [ai-harness](./.agents/skills/ai-harness/SKILL.md) | Pi-style 4-tool harness, multi-provider, no sub-agents in core |
+| [ai-harness](./.agents/skills/ai-harness/SKILL.md) | We embed Pi SDK (`pi-agent-core`, `pi-ai`, `pi-coding-agent`). MCP decision in epic #15 |
 | [engram-integration](./.agents/skills/engram-integration/SKILL.md) | Engram embedded + MCP fallback, topic_key conventions |
 | [nix-packaging](./.agents/skills/nix-packaging/SKILL.md) | Flake structure, HM module, nixGL wrapper |
 | [commit-convention](./.agents/skills/commit-convention/SKILL.md) | Commit message rules, work-unit commits |
@@ -87,6 +87,6 @@ The depth lives in [`.agents/skills/`](./.agents/skills/). Each is a `SKILL.md` 
 ## Inspirations / prior art
 
 - [crynta/terax-ai](https://github.com/crynta/terax-ai) — concrete reference for Tauri 2 + xterm.js + PTY (see their `src-tauri/src/modules/pty/session.rs` reader/flusher/waiter pattern).
-- [Pi (earendil-works/pi)](https://github.com/earendil-works/pi) — AI harness philosophy.
+- [Pi (earendil-works/pi)](https://github.com/earendil-works/pi) — **embedded directly as our AI layer** (`pi-agent-core`, `pi-ai`, `pi-coding-agent`).
 - [Ghostty](https://github.com/ghostty-org/ghostty) — daily driver, keybind ergonomics, Nix packaging via nixGL.
 - [Wave Terminal](https://github.com/wavetermdev/waveterm) — block system, mixed-content panes.

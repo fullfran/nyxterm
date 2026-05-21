@@ -25,14 +25,14 @@ Outcome: replace the daily tools that today live as separate processes (fzf, atu
 10. **Git status caching** — branch + dirty en tab title, cacheado 2s, sin fork-per-prompt
 11. **Project/worktree switcher** — integrado con `gwt`, lista persistida en Engram
 
-## Phase 2 — AI nativa (Pi-style harness embebido)
+## Phase 2 — AI nativa (Pi embebido)
 
-Outcome: AI as a first-class panel, minimalist, multi-provider, memory-aware.
+Outcome: AI as a first-class panel. We **embed [Pi](https://github.com/earendil-works/pi)** (`pi-agent-core` + `pi-ai` + `pi-coding-agent`) instead of building our own harness.
 
-12. **Embedded Pi-style harness** — 4 tools (`Read`, `Write`, `Edit`, `Bash`), TypeScript extensions, prompt templates, themes
-13. **Multi-provider LLM** — Anthropic/OpenAI/Ollama/MLX vía AI SDK unificada
+12. **Embed Pi as AI harness** — `createAgentSession` integration, Read/Write/Edit/Bash via Pi, chat UI, context injection
+13. **Provider Settings UI (over pi-ai)** — UI + keychain + provider switcher; routing lo hace `pi-ai`
 14. **Engram first-class** — memoria como módulo nativo, fallback a MCP si servidor remoto
-15. **MCP client built-in** — context7, playwright, gestionado desde Settings
+15. **MCP / external tools strategy** — DECISION + impl: Skills-as-CLIs (Pi way) vs Pi extension vs nyxterm-native module
 16. **AI command palette** — `Ctrl+;` abre prompt → traduce NL a bash, explica output, sugiere fix
 
 ## Phase 3 — Web panes (el dolor real)

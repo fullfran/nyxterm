@@ -1,6 +1,6 @@
 # nyxterm
 
-> AI-native terminal emulator. Tauri 2 + Rust. Tokyo Night. Pi-style AI harness. Built for Nix homies.
+> AI-native terminal emulator. Tauri 2 + Rust. Tokyo Night. [Pi](https://github.com/earendil-works/pi) embedded as the AI layer. Built for Nix homies.
 
 ![status](https://img.shields.io/badge/status-early--development-orange)
 ![license](https://img.shields.io/badge/license-MIT-blue)
@@ -39,13 +39,13 @@ See [`ROADMAP.md`](./ROADMAP.md) for the full phase breakdown and the [Issues](h
 |---|---|---|
 | **1** | MVP terminal puro (PTY, multiplexing, theme, shell integration) | [Phase 1 — MVP](https://github.com/FullFran/nyxterm/milestones) |
 | **1.5** | Productivity (fuzzy picker, atuin palette, inline suggestions, project switcher) | [Phase 1.5](https://github.com/FullFran/nyxterm/milestones) |
-| **2** | Pi-style AI harness, multi-provider LLM, Engram first-class, MCP client | [Phase 2](https://github.com/FullFran/nyxterm/milestones) |
+| **2** | Embed Pi (`pi-agent-core`, `pi-ai`, `pi-coding-agent`), Engram first-class, MCP strategy decision | [Phase 2](https://github.com/FullFran/nyxterm/milestones) |
 | **3** | Web panes — generic webview, libmpv for media, WhatsApp Web pane | [Phase 3](https://github.com/FullFran/nyxterm/milestones) |
 
 ## Inspirations
 
 - [crynta/terax-ai](https://github.com/crynta/terax-ai) — architecture reference for Tauri 2 + xterm.js PTY wiring
-- [Pi (earendil-works/pi)](https://github.com/earendil-works/pi) — AI harness philosophy
+- [Pi (earendil-works/pi)](https://github.com/earendil-works/pi) — **embedded directly as the AI layer** (not just philosophy)
 - [Ghostty](https://github.com/ghostty-org/ghostty) — daily driver, keybind ergonomics
 - [Wave Terminal](https://github.com/wavetermdev/waveterm) — block system, mixed-content panes
 
