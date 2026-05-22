@@ -100,7 +100,7 @@ describe("resolveBindings", () => {
     const binding = active.find((a) => a.chord === "ctrl+shift+c");
     expect(binding).toBeDefined();
     expect(binding!.actionId).toBe("terminal.clear_screen");
-    expect(binding!.source).toBe("user");
+    expect(binding!.source).toBe("override");
   });
 
   it("active count stays the same when overriding an existing chord", () => {
@@ -155,7 +155,7 @@ describe("resolveBindings", () => {
     const found = active.find((a) => a.chord === "ctrl+alt+1");
     expect(found).toBeDefined();
     expect(found!.actionId).toBe("terminal.scroll_to_top");
-    expect(found!.source).toBe("user");
+    expect(found!.source).toBe("override");
   });
 
   it("active count increases by 1 after extending with new chord", () => {
@@ -273,7 +273,7 @@ describe("resolveBindings", () => {
 
     const found = active.find((a) => a.chord === "ctrl+a");
     expect(found!.actionId).toBe("terminal.clear_screen");
-    expect(found!.source).toBe("user");
+    expect(found!.source).toBe("override");
 
     const unchanged = active.find((a) => a.chord === "ctrl+b");
     expect(unchanged!.actionId).toBe("terminal.paste_from_clipboard");

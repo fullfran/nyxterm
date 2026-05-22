@@ -9,14 +9,14 @@
  *  1. Seed a Map<Chord, Binding> from defaults (copy — never mutate input)
  *  2. Apply overrides in document order
  *     a. target == "unbind"     → map.delete(chord)
- *     b. target is valid ActionId → map.set(chord, { chord, actionId, source: "user" })
+ *     b. target is valid ActionId → map.set(chord, { chord, actionId, source: "override" })
  *     c. unknown target          → ResolverWarning, skip
  *  3. Duplicate chord in overrides → last-write-wins, emit warning for the earlier one
  *  4. Return { active: Array.from(map.values()), warnings }
  *
  * Key invariants:
  *  - DEFAULT_BINDINGS is NEVER mutated (verified by tests)
- *  - source === "user" for any user-supplied override
+ *  - source === "override" for any user-supplied override (Binding.source union member)
  *  - Original source tag preserved for unchanged defaults
  *
  * REQ-KB-014 (extend with new chord), REQ-KB-015 (unbind removes),
@@ -175,7 +175,7 @@ export function resolveBindings(
     const newBinding: Binding = {
       chord,
       actionId: target,
-      source: "user" as Binding["source"],
+      source: "override",
     };
     activeMap.set(chord, newBinding);
     seenChords.set(chord, lineNumber);

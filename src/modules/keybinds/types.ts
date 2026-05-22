@@ -73,7 +73,7 @@ export type AppActionId =
   | "app.popup_ai"
   | "app.copy_mode_enter";
 
-/** Full ActionId union — 31 IDs total (Groups A + B + C) */
+/** Full ActionId union — 32 IDs total (Groups A + B + C) */
 export type ActionId =
   | TerminalActionId
   | PaneActionId
