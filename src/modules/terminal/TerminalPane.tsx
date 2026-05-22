@@ -29,6 +29,12 @@ import { registerStubs } from "../keybinds/actions/stubs";
  *   - Group A terminal action handlers + Group B/C stubs via actions/terminal.ts + stubs.ts
  *   - getActionContext injected into engine so handlers receive live term/fit/sessionId
  *   - termActionsDisposable + stubsDisposable disposed BEFORE detach + term.dispose()
+ *
+ * Epic #26 (keybinds PR3b) adds:
+ *   - engine.loadConfig() called after attachToTerminal — reads ~/.config/nyxterm/config
+ *     via Tauri, resolves overrides, swaps active map (REQ-KB-003 steps 2-5)
+ *   - engine.subscribeHotReload() — Tauri "keybinds-changed" listener; disposed on unmount
+ *     (REQ-KB-037, REQ-KB-038, REQ-KB-039)
  */
 export function TerminalPane() {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -72,6 +78,23 @@ export function TerminalPane() {
     const stubsDisposable = registerStubs(engine);
 
     engine.attachToTerminal(term);
+
+    // Boot sequence steps 2-5 (REQ-KB-003): read user config via Tauri,
+    // parse, resolve overrides, swap active map atomically (REQ-KB-040).
+    // Fire-and-forget — if config_read fails (e.g., no Tauri runtime in dev),
+    // the engine remains functional with defaults (REQ-KB-009).
+    engine.loadConfig().catch((err) => {
+      console.warn("[keybinds] loadConfig failed (using defaults):", err);
+    });
+
+    // Subscribe to "keybinds-changed" Tauri event for hot reload (REQ-KB-037..039).
+    // Returns a disposable that unregisters the listener on unmount.
+    let hotReloadDisposable: { dispose(): void } | null = null;
+    engine.subscribeHotReload().then((d) => {
+      hotReloadDisposable = d;
+    }).catch((err) => {
+      console.warn("[keybinds] subscribeHotReload failed:", err);
+    });
 
     fit.fit();
     // Attach WebGL renderer after open+fit. Falls back to canvas silently on failure.
@@ -168,6 +191,8 @@ export function TerminalPane() {
       // Design §2.1, REQ-KB-005.
       termActionsDisposable.dispose();
       stubsDisposable.dispose();
+      // Dispose hot reload Tauri listener (REQ-KB-037..039).
+      hotReloadDisposable?.dispose();
       // Detach keybinds engine BEFORE term.dispose() (design §4.2, REQ-KB-005).
       engine.detach(term);
       term.dispose();

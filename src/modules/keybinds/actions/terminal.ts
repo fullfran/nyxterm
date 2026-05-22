@@ -3,13 +3,19 @@
  *
  * Implements all terminal.* action IDs declared in types.ts:
  *   copy_to_clipboard, paste_from_clipboard, scroll_{page_up,page_down,to_top,to_bottom},
- *   font_size_{inc,dec,reset}, clear_screen, reload_config (stub for PR2).
+ *   font_size_{inc,dec,reset}, clear_screen, reload_config.
+ *
+ * PR3b: reload_config replaced with real implementation — invokes Tauri
+ * config_reload command, which re-reads the file + emits "keybinds-changed".
+ * The engine's hot-reload listener catches the event and swaps the active map
+ * (REQ-KB-037, REQ-KB-038, REQ-KB-040). The action itself just kicks off the chain.
  *
  * Each handler signature: (event: KeyboardEvent, ctx: ActionContext) => void | Promise<void>
  * Design §3.3 (handler signature), §4.5 (bracketed paste always-wrap).
- * REQ-KB-041 through REQ-KB-051 (behaviors), REQ-KB-018, REQ-KB-021.
+ * REQ-KB-041 through REQ-KB-051 (behaviors), REQ-KB-018, REQ-KB-021, REQ-KB-037.
  */
 
+import { invoke } from "@tauri-apps/api/core";
 import type { ActionHandler, ActionId, IDisposable } from "../types";
 import type { KeybindsEngine } from "../engine";
 
@@ -121,14 +127,22 @@ const clearScreen: ActionHandler = (_event, ctx) => {
 };
 
 /**
- * Reload keybind config. Stub for PR2 — real implementation lands in PR3
- * with the config-loader and Tauri keybinds_reload command.
- * REQ-KB-051: behavior fully specified by REQ-KB-036..040 (PR3 scope).
+ * Reload keybind config.
+ *
+ * Invokes Tauri config_reload, which re-reads ~/.config/nyxterm/config from disk
+ * and emits the "keybinds-changed" event carrying the raw file contents.
+ * The engine's subscribeHotReload() listener catches that event and rebuilds
+ * the active binding map atomically (REQ-KB-038, REQ-KB-040).
+ *
+ * This handler just kicks off the chain — it does NOT directly mutate engine state.
+ * The PTY session is NOT dropped (REQ-KB-039).
+ *
+ * REQ-KB-051, REQ-KB-036, REQ-KB-037.
  */
-const reloadConfig: ActionHandler = () => {
-  // PR2 stub: real implementation in PR3 (config-loader epic).
-  console.log("[keybinds] reload_config — not yet implemented (PR3)");
-  return Promise.resolve();
+const reloadConfig: ActionHandler = async () => {
+  await invoke("config_reload").catch((err) => {
+    console.warn("[keybinds] config_reload failed:", err);
+  });
 };
 
 // ---------------------------------------------------------------------------

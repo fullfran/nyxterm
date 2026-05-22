@@ -13,13 +13,17 @@
  *   Matched chord without handler → console.warn once + consume (REQ-KB-020)
  *   Unmatched chords → return true (pass to PTY)
  *
+ * PR3b scope: adds loadConfig() for boot sequence + hot reload via
+ *   "keybinds-changed" Tauri event (REQ-KB-003, REQ-KB-037..040).
+ *
  * Design §3.3 (handler dispatch), §4.2 (attach timing), §4.3 (default factory),
- * §4.4 (action ID namespace).
- * REQ-KB-001, REQ-KB-002, REQ-KB-004, REQ-KB-005, REQ-KB-008, REQ-KB-018,
- * REQ-KB-020, REQ-KB-021, REQ-KB-022.
+ * §4.4 (action ID namespace), §2 lifecycle (boot + hot reload).
+ * REQ-KB-001..005, REQ-KB-008, REQ-KB-018, REQ-KB-020..022,
+ * REQ-KB-036..040, REQ-KB-051.
  */
 
 import type { Terminal } from "@xterm/xterm";
+import { listen } from "@tauri-apps/api/event";
 import type {
   ActionId,
   ActionHandler,
@@ -31,6 +35,8 @@ import type {
 import { DEFAULT_BINDINGS } from "./defaults";
 import { normalizeKeyEvent } from "./normalize";
 import { ActionRegistry } from "./registry";
+import { parseConfigText } from "./config-loader";
+import { resolveBindings } from "./resolver";
 
 // ---------------------------------------------------------------------------
 // Engine interface (public API)
@@ -39,6 +45,36 @@ import { ActionRegistry } from "./registry";
 export interface KeybindsEngine {
   /** Load default bindings into the active map. Called once at init. */
   loadDefaults(): void;
+
+  /**
+   * Read user config via Tauri config_read, parse, resolve overrides, and
+   * atomically swap the active binding map.
+   *
+   * Boot sequence (REQ-KB-003 steps 2-5):
+   *   1. Invoke Tauri config_read → raw text
+   *   2. parseConfigText → ConfigEntry[]
+   *   3. resolveBindings(DEFAULT_BINDINGS, entries) → active Binding[]
+   *   4. Swap activeMap (synchronous per REQ-KB-040)
+   *   5. Log any parse/resolve warnings to console.warn
+   *
+   * Called from TerminalPane useEffect after attachToTerminal.
+   * Also called internally by the hot reload event listener.
+   * REQ-KB-003, REQ-KB-040.
+   */
+  loadConfig(): Promise<void>;
+
+  /**
+   * Subscribe to the "keybinds-changed" Tauri event for hot reload.
+   * Returns IDisposable that removes the Tauri listener.
+   *
+   * When the event fires (after config_reload command), the engine
+   * re-parses the payload and atomically swaps the active map without
+   * remounting the terminal (REQ-KB-038, REQ-KB-039, REQ-KB-040).
+   *
+   * Called from TerminalPane useEffect; disposed on unmount.
+   * REQ-KB-037, REQ-KB-038, REQ-KB-039.
+   */
+  subscribeHotReload(): Promise<IDisposable>;
 
   /**
    * Attach the custom key event handler to the given Terminal.
@@ -86,8 +122,12 @@ export interface KeybindsEngine {
  * terminal"). Future PRs may promote it to app-wide.
  */
 export function createKeybindsEngine(deps: EngineDeps = {}): KeybindsEngine {
-  // Active chord → actionId map (derived from defaults; never mutates DEFAULT_BINDINGS)
+  // Active chord → Binding map (derived from defaults + user overrides).
+  // Never mutates DEFAULT_BINDINGS. Atomically replaced on config reload.
   const activeMap = new Map<string, ActionId>();
+  // Parallel map for source tracking (chord → "default" | "override")
+  // so listBindings() can report provenance per REQ-KB-004.
+  const sourceMap = new Map<string, ActiveBinding["source"]>();
   // Registry of action handlers
   const registry = new ActionRegistry();
   // Track per-instance handler disposables for cleanup on detach
@@ -100,7 +140,75 @@ export function createKeybindsEngine(deps: EngineDeps = {}): KeybindsEngine {
   function loadDefaults(): void {
     for (const binding of DEFAULT_BINDINGS) {
       activeMap.set(binding.chord, binding.actionId);
+      sourceMap.set(binding.chord, "default");
     }
+  }
+
+  // -------------------------------------------------------------------------
+  // applyResolvedBindings — atomic swap helper (REQ-KB-040)
+  // -------------------------------------------------------------------------
+
+  function applyResolvedBindings(resolved: import("./types").Binding[]): void {
+    // Synchronous swap — clear then repopulate both maps atomically.
+    // The handler closure captures activeMap by reference, so the next
+    // keypress after this function returns sees the updated map.
+    // REQ-KB-040: no microtask or macrotask deferral.
+    activeMap.clear();
+    sourceMap.clear();
+    for (const binding of resolved) {
+      activeMap.set(binding.chord, binding.actionId);
+      // Map resolver sources to ActiveBinding.source union.
+      // resolver uses "override" for user overrides; defaults keep their tag.
+      const src: ActiveBinding["source"] =
+        binding.source === "override" ? "override" : "default";
+      sourceMap.set(binding.chord, src);
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // loadConfig — T3.4 boot sequence (REQ-KB-003 steps 2-5)
+  // -------------------------------------------------------------------------
+
+  async function loadConfig(): Promise<void> {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const text = await invoke<string>("config_read");
+    const { entries, warnings: parseWarnings } = parseConfigText(text);
+    const { active, warnings: resolveWarnings } = resolveBindings(
+      DEFAULT_BINDINGS,
+      entries,
+    );
+    applyResolvedBindings(active);
+    // Log any warnings (toast aggregation deferred to PR4 scope)
+    for (const w of parseWarnings) {
+      console.warn(`[keybinds] config parse warning (line ${w.lineNumber}): ${w.reason}`);
+    }
+    for (const w of resolveWarnings) {
+      console.warn(`[keybinds] config resolve warning: ${w.reason}`);
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // subscribeHotReload — T3.4 hot reload via Tauri event (REQ-KB-037..040)
+  // -------------------------------------------------------------------------
+
+  async function subscribeHotReload(): Promise<IDisposable> {
+    const unlisten = await listen<string>("keybinds-changed", (event) => {
+      // Synchronous re-resolve on event (REQ-KB-040: no deferral).
+      const { entries, warnings: pw } = parseConfigText(event.payload);
+      const { active, warnings: rw } = resolveBindings(DEFAULT_BINDINGS, entries);
+      applyResolvedBindings(active);
+      for (const w of pw) {
+        console.warn(`[keybinds] hot-reload parse warning (line ${w.lineNumber}): ${w.reason}`);
+      }
+      for (const w of rw) {
+        console.warn(`[keybinds] hot-reload resolve warning: ${w.reason}`);
+      }
+      // Emit document-level event so settings UI (epic #6) can react.
+      // REQ-KB-038 step 5.
+      document.dispatchEvent(new CustomEvent("keybinds-reloaded"));
+    });
+
+    return { dispose: () => void unlisten() };
   }
 
   // -------------------------------------------------------------------------
@@ -216,11 +324,10 @@ export function createKeybindsEngine(deps: EngineDeps = {}): KeybindsEngine {
   function listBindings(): ActiveBinding[] {
     const results: ActiveBinding[] = [];
     for (const [chord, actionId] of activeMap) {
-      // In PR1 all bindings are defaults (override resolution comes in PR3)
       results.push({
         chord: chord as Chord,
         actionId,
-        source: "default",
+        source: sourceMap.get(chord) ?? "default",
       });
     }
     return results;
@@ -232,6 +339,8 @@ export function createKeybindsEngine(deps: EngineDeps = {}): KeybindsEngine {
 
   return {
     loadDefaults,
+    loadConfig,
+    subscribeHotReload,
     attachToTerminal,
     detach,
     registerAction,

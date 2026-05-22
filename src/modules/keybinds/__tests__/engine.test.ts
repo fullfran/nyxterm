@@ -15,9 +15,15 @@
  *  - Matched chord with no handler → console.warn + consume (REQ-KB-020)
  *  - Warn-once: second press does NOT re-warn (REQ-KB-020 deduplicated)
  *  - getActionContext: handler receives ctx on invocation
+ *
+ * Covers (T3.4 — loadConfig + hot reload):
+ *  - loadConfig with mocked invoke → engine.listBindings shows user overrides applied
+ *  - loadConfig with empty string (no file) → defaults preserved unchanged
+ *  - hot reload event via "keybinds-changed" → re-resolves without remount
+ *  - listBindings() source field: defaults="default", overrides="override"
  */
 
-import { describe, it, expect, vi, afterEach } from "vitest";
+import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { createKeybindsEngine } from "../engine";
 import type { ActionContext } from "../types";
 
@@ -372,5 +378,184 @@ describe("detach", () => {
 
     // After detach: all chords pass through
     expect(term.fireKey(keyEvent({ key: "C", ctrlKey: true, shiftKey: true }))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T3.4 — loadConfig + hot reload (REQ-KB-003, REQ-KB-037..040)
+// ---------------------------------------------------------------------------
+
+// Mock @tauri-apps/api/core so tests can run without a Tauri runtime
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn(),
+}));
+
+// Mock @tauri-apps/api/event so subscribeHotReload works in test env
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn(),
+}));
+
+describe("loadConfig (T3.4)", () => {
+  let invokeMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    invokeMock = invoke as ReturnType<typeof vi.fn>;
+    invokeMock.mockReset();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("empty config string (file absent) preserves all 29 defaults unchanged", async () => {
+    invokeMock.mockResolvedValue("");
+    const engine = createKeybindsEngine();
+    engine.loadDefaults();
+    await engine.loadConfig();
+    const bindings = engine.listBindings();
+    expect(bindings).toHaveLength(29);
+    for (const b of bindings) {
+      expect(b.source).toBe("default");
+    }
+  });
+
+  it("user override replaces source to 'override' for overridden chord", async () => {
+    // Override ctrl+shift+c → terminal.paste_from_clipboard
+    invokeMock.mockResolvedValue(
+      "keybind = ctrl+shift+c = terminal.paste_from_clipboard\n",
+    );
+    const engine = createKeybindsEngine();
+    engine.loadDefaults();
+    await engine.loadConfig();
+
+    const bindings = engine.listBindings();
+    const overridden = bindings.find((b) => b.chord === "ctrl+shift+c");
+    expect(overridden).toBeDefined();
+    expect(overridden!.actionId).toBe("terminal.paste_from_clipboard");
+    expect(overridden!.source).toBe("override");
+  });
+
+  it("unbind removes the binding from listBindings()", async () => {
+    invokeMock.mockResolvedValue("keybind = ctrl+shift+c = unbind\n");
+    const engine = createKeybindsEngine();
+    engine.loadDefaults();
+    await engine.loadConfig();
+
+    const bindings = engine.listBindings();
+    const unbound = bindings.find((b) => b.chord === "ctrl+shift+c");
+    expect(unbound).toBeUndefined();
+    expect(bindings).toHaveLength(28);
+  });
+
+  it("extend adds a new binding not in defaults", async () => {
+    invokeMock.mockResolvedValue(
+      "keybind = ctrl+shift+q = terminal.copy_to_clipboard\n",
+    );
+    const engine = createKeybindsEngine();
+    engine.loadDefaults();
+    await engine.loadConfig();
+
+    const bindings = engine.listBindings();
+    const ext = bindings.find((b) => b.chord === "ctrl+shift+q");
+    expect(ext).toBeDefined();
+    expect(ext!.actionId).toBe("terminal.copy_to_clipboard");
+    expect(ext!.source).toBe("override");
+    // Total = 29 defaults + 1 extension
+    expect(bindings).toHaveLength(30);
+  });
+
+  it("second loadConfig call with empty content restores defaults (reload after config delete)", async () => {
+    invokeMock.mockResolvedValueOnce(
+      "keybind = ctrl+shift+c = terminal.paste_from_clipboard\n",
+    );
+    invokeMock.mockResolvedValueOnce("");
+
+    const engine = createKeybindsEngine();
+    engine.loadDefaults();
+    await engine.loadConfig();
+    // First load: override applied
+    expect(
+      engine.listBindings().find((b) => b.chord === "ctrl+shift+c")?.actionId,
+    ).toBe("terminal.paste_from_clipboard");
+
+    await engine.loadConfig();
+    // Second load with empty: back to default
+    const after = engine.listBindings().find((b) => b.chord === "ctrl+shift+c");
+    expect(after?.actionId).toBe("terminal.copy_to_clipboard");
+    expect(after?.source).toBe("default");
+  });
+});
+
+describe("hot reload via keybinds-changed event (T3.4)", () => {
+  let listenMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(async () => {
+    const { listen } = await import("@tauri-apps/api/event");
+    listenMock = listen as ReturnType<typeof vi.fn>;
+    listenMock.mockReset();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("subscribeHotReload registers a Tauri event listener", async () => {
+    // listen mock: store the callback and return an unlisten fn
+    listenMock.mockImplementation((_event: string, _cb: unknown) => {
+      return Promise.resolve(vi.fn());
+    });
+
+    const engine = createKeybindsEngine();
+    engine.loadDefaults();
+    const disposable = await engine.subscribeHotReload();
+
+    expect(listenMock).toHaveBeenCalledWith(
+      "keybinds-changed",
+      expect.any(Function),
+    );
+    expect(disposable).toHaveProperty("dispose");
+  });
+
+  it("keybinds-changed event triggers re-resolve and updates listBindings()", async () => {
+    let capturedCallback: ((event: { payload: string }) => void) | null = null;
+
+    listenMock.mockImplementation(
+      (_event: string, cb: (event: { payload: string }) => void) => {
+        capturedCallback = cb;
+        return Promise.resolve(vi.fn());
+      },
+    );
+
+    const engine = createKeybindsEngine();
+    engine.loadDefaults();
+    await engine.subscribeHotReload();
+
+    // Before event: ctrl+shift+c → copy_to_clipboard (default)
+    expect(
+      engine.listBindings().find((b) => b.chord === "ctrl+shift+c")?.actionId,
+    ).toBe("terminal.copy_to_clipboard");
+
+    // Fire "keybinds-changed" with override content
+    capturedCallback!({
+      payload: "keybind = ctrl+shift+c = terminal.paste_from_clipboard\n",
+    });
+
+    // After event: ctrl+shift+c → paste_from_clipboard (override)
+    const binding = engine.listBindings().find((b) => b.chord === "ctrl+shift+c");
+    expect(binding?.actionId).toBe("terminal.paste_from_clipboard");
+    expect(binding?.source).toBe("override");
+  });
+
+  it("dispose() removes the Tauri listener", async () => {
+    const unlistenFn = vi.fn();
+    listenMock.mockResolvedValue(unlistenFn);
+
+    const engine = createKeybindsEngine();
+    engine.loadDefaults();
+    const disposable = await engine.subscribeHotReload();
+    disposable.dispose();
+
+    expect(unlistenFn).toHaveBeenCalledOnce();
   });
 });
