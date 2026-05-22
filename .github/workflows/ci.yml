@@ -49,6 +49,16 @@ jobs:
           --manifest-path src-tauri/pty-core/Cargo.toml
           -- -D warnings
 
+      # Keybinds config module (--lib skips the Tauri binary entry point which
+      # requires webkit2gtk-4.1-dev not available on ubuntu-latest).
+      # Epic #26: adds config_read, config_reload, config_path commands + 3 unit tests.
+      - name: cargo clippy (nyxterm --lib, keybinds + tauri commands)
+        run: >
+          cargo clippy
+          --lib
+          --manifest-path src-tauri/Cargo.toml
+          -- -D warnings
+
       # ── unit tests ───────────────────────────────────────────────────────
       # Integration tests (#[ignore]) require a real PTY/shell environment and
       # timing-sensitive assertions — they are NOT run here. Run locally with:
@@ -57,6 +67,15 @@ jobs:
         run: >
           cargo test
           --manifest-path src-tauri/pty-core/Cargo.toml
+
+      # Keybinds Rust unit tests: config_read, config_reload, tempdir-based path tests.
+      # --lib flag skips the Tauri binary entry point (no webkit2gtk needed).
+      # Baseline: 3 tests (epic #26 PR3b).
+      - name: cargo test (nyxterm --lib, keybinds config tests)
+        run: >
+          cargo test
+          --manifest-path src-tauri/Cargo.toml
+          --lib
 
   # ── TypeScript quality gates ────────────────────────────────────────────────
   typescript:
@@ -82,6 +101,14 @@ jobs:
       # ── tsc strict mode ─────────────────────────────────────────────────
       - name: TypeScript strict check
         run: pnpm exec tsc --noEmit
+
+      # ── vitest unit + integration tests ─────────────────────────────────
+      # pnpm test = vitest run (non-watch, exits with code on failure).
+      # Covers: keybinds engine + ergonomic lifecycle + acceptance SC-001..016
+      # + pty-bridge types + all module tests.
+      # Baseline: 263 tests across 12 suites (epic #26 final).
+      - name: Vitest (unit + integration tests)
+        run: pnpm test --reporter=verbose
 
       # ── biome / eslint ──────────────────────────────────────────────────
       # TODO: enable when a linter is configured.
