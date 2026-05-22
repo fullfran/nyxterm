@@ -90,7 +90,10 @@ mod tests {
         let removed = state.remove(id).expect("remove must return the session");
         assert_eq!(removed.id, 0);
 
-        assert!(state.get(id).is_none(), "session must be absent after remove");
+        assert!(
+            state.get(id).is_none(),
+            "session must be absent after remove"
+        );
     }
 
     #[test]
