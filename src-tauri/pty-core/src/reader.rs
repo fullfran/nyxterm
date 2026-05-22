@@ -3,50 +3,75 @@ use std::{
     sync::{Arc, Condvar, Mutex},
 };
 
-use crate::session::{DA_BUFFER_CAP, MAX_PENDING, OVERFLOW_NOTICE, READ_CHUNK};
+use crate::{
+    da_filter::DaFilter,
+    session::{MAX_PENDING, OVERFLOW_NOTICE, READ_CHUNK},
+};
 
 /// Reader thread body.
 ///
-/// Reads from the PTY master in 16 KiB chunks, appends filtered bytes to the
-/// shared `pending` buffer, and notifies the flusher condvar after each write.
+/// Reads from the PTY master in 16 KiB chunks, feeds each chunk through
+/// `DaFilter`, writes any DA replies back to the PTY master, and appends
+/// the surviving bytes to the shared `pending` buffer.
 ///
-/// Slice 1: no DA filter (slice 3), no 4 MiB cap enforcement (slice 4 adds
-/// the cap branch). The constants `MAX_PENDING` and `DA_BUFFER_CAP` are
-/// defined here for documentation — they will be wired in slices 3 and 4.
+/// Lock-ordering rule (ADR-2 / design §2.1):
+///   The `writer` lock and the `pending` lock are INDEPENDENT. DA replies are
+///   written via `writer.lock()` BEFORE `pending.lock()` is acquired in the
+///   same iteration. Neither lock is ever held while acquiring the other.
 ///
-/// Termination: `Ok(0)` or any `Err` from `read()` breaks the loop. Reader
-/// sends a final `cv.notify_one()` so the flusher wakes for a last drain.
+/// Termination: `Ok(0)` or any `Err` from `read()` breaks the loop. A final
+/// `cv.notify_one()` is sent so the flusher wakes for a last drain pass.
 ///
-/// Lock-ordering rule: `writer` lock (for DA replies) is NEVER held while
-/// `pending` lock is held — they are always acquired separately.
+/// Note: the reader does NOT set `done`. That is the waiter thread's
+/// responsibility (design §2.4 shutdown ordering).
 pub fn reader_thread(
     mut master_reader: Box<dyn Read + Send>,
-    _writer: Arc<Mutex<Box<dyn Write + Send>>>,
+    writer: Arc<Mutex<Box<dyn Write + Send>>>,
     pending: Arc<(Mutex<Vec<u8>>, Condvar)>,
 ) {
-    // Suppress unused constant warnings — these will be actively used in slice 3/4.
-    let _ = MAX_PENDING;
-    let _ = DA_BUFFER_CAP;
-    let _ = OVERFLOW_NOTICE;
-
     let mut buf = [0u8; READ_CHUNK];
+    let mut da = DaFilter::new();
+
     loop {
         match master_reader.read(&mut buf) {
             Ok(0) => break, // EOF — child closed the master
             Ok(n) => {
-                // Slice 1: pass bytes through without DA filter or cap.
-                // Slices 3 and 4 will add da.process() and the cap branch here.
-                let (m, cv) = &*pending;
-                {
-                    let mut g = m.lock().unwrap();
-                    g.extend_from_slice(&buf[..n]);
+                let (filtered, replies) = da.process(&buf[..n]);
+
+                // Step 1: write DA replies to PTY master (lock writer, then release).
+                // Must happen BEFORE touching `pending` (lock-ordering rule).
+                if !replies.is_empty() {
+                    if let Ok(mut w) = writer.lock() {
+                        for r in &replies {
+                            let _ = w.write_all(r);
+                        }
+                        let _ = w.flush();
+                    }
                 }
-                cv.notify_one();
+
+                // Step 2: append filtered bytes to pending, enforce 4 MiB cap.
+                // `pending` lock is acquired here — writer lock is already released.
+                {
+                    let (m, cv) = &*pending;
+                    let mut g = m.lock().unwrap();
+                    if g.len() + filtered.len() > MAX_PENDING {
+                        // Backpressure cap exceeded (design §2.6):
+                        // clear the buffer and inject the VT-reset + notice.
+                        // Slice 4 will add the explicit cap enforcement branch;
+                        // this guard already matches the design contract.
+                        g.clear();
+                        g.extend_from_slice(OVERFLOW_NOTICE);
+                    } else {
+                        g.extend_from_slice(&filtered);
+                    }
+                    cv.notify_one();
+                }
             }
             Err(_) => break, // master closed / error
         }
     }
-    // Final notify so flusher wakes one last time and can drain any remaining bytes.
+
+    // Final notify so the flusher wakes one last time and can drain remaining bytes.
     let (_, cv) = &*pending;
     cv.notify_one();
 }
