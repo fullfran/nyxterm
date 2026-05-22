@@ -9,3 +9,5 @@ thiserror = "2"
 
 [dev-dependencies]
 mockall = "0.13"
+anyhow = "1"
+libc = "0.2"

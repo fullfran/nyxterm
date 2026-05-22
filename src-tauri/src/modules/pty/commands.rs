@@ -17,6 +17,27 @@ use nyxterm_pty_core::{
 
 use super::PtyError;
 
+/// Resize an active PTY session to the given dimensions.
+///
+/// Issues `ioctl(TIOCSWINSZ)` via `MasterPty::resize()`, which delivers
+/// SIGWINCH to the child's foreground process group. REQ-PTY-007.
+///
+/// The frontend should call this once after `fit.fit()` to deliver the real
+/// window size, and then call `kickPty` (two pty_resize calls: +1 row, restore)
+/// to guarantee SIGWINCH even when the size hasn't changed (design §5, §4.4).
+#[tauri::command]
+pub async fn pty_resize(
+    state: tauri::State<'_, PtyState>,
+    session_id: u32,
+    cols: u16,
+    rows: u16,
+) -> Result<(), String> {
+    let session = state
+        .get(session_id)
+        .ok_or_else(|| PtyError::NotFound(session_id).to_string())?;
+    session.resize(cols, rows).map_err(|e| e.to_string())
+}
+
 /// Open a new PTY session running `$SHELL` (falls back to `/bin/sh`).
 ///
 /// Returns the session ID that must be passed to `pty_write`, `pty_resize`,
@@ -75,6 +96,8 @@ pub async fn pty_open(
         .master
         .try_clone_reader()
         .map_err(|e| PtyError::Spawn(e.to_string()))?;
+    // Keep the master handle alive in the Session for pty_resize (TIOCSWINSZ).
+    let master = pair.master;
 
     let pending: Arc<(Mutex<Vec<u8>>, Condvar)> =
         Arc::new((Mutex::new(Vec::new()), Condvar::new()));
@@ -104,6 +127,7 @@ pub async fn pty_open(
 
     let session = Arc::new(Session::new(
         master_writer,
+        master,
         Arc::clone(&pending),
         Arc::clone(&on_data_fn),
         killer,
