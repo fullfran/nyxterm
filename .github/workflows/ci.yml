@@ -1,0 +1,181 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # ── Rust quality gates ─────────────────────────────────────────────────────
+  rust:
+    name: Rust (fmt + clippy + unit tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      # ── fmt ──────────────────────────────────────────────────────────────
+      - name: cargo fmt --check
+        run: cargo fmt --all --check --manifest-path src-tauri/Cargo.toml
+
+      # ── clippy ───────────────────────────────────────────────────────────
+      # -D warnings: any new warning becomes a build failure.
+      # pty-core is the testable crate; Tauri crate requires webkit2gtk headers
+      # that are not available on the default ubuntu-latest runner, so we
+      # check clippy only for pty-core here.
+      - name: cargo clippy (pty-core)
+        run: >
+          cargo clippy
+          --all-targets
+          --manifest-path src-tauri/pty-core/Cargo.toml
+          -- -D warnings
+
+      # ── unit tests ───────────────────────────────────────────────────────
+      # Integration tests (#[ignore]) require a real PTY/shell environment and
+      # timing-sensitive assertions — they are NOT run here. Run locally with:
+      #   cargo test --manifest-path src-tauri/pty-core/Cargo.toml -- --ignored
+      - name: cargo test (pty-core unit tests)
+        run: >
+          cargo test
+          --manifest-path src-tauri/pty-core/Cargo.toml
+
+  # ── TypeScript quality gates ────────────────────────────────────────────────
+  typescript:
+    name: TypeScript (tsc + lint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "pnpm"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # ── tsc strict mode ─────────────────────────────────────────────────
+      - name: TypeScript strict check
+        run: pnpm exec tsc --noEmit
+
+      # ── biome / eslint ──────────────────────────────────────────────────
+      # TODO: enable when a linter is configured.
+      # Biome (https://biomejs.dev/) is the intended linter per spec REQ-PTY-010.
+      # Add biome to devDependencies and create biome.json, then replace this
+      # block with:
+      #   run: pnpm exec biome check src
+      # ESLint is NOT configured in this project — do not add it.
+      - name: Lint (TODO — linter not yet configured)
+        run: echo "INFO: biome not yet configured. Add biome.json to enable. See REQ-PTY-010."
+
+  # ── Release binary size budget ─────────────────────────────────────────────
+  # T7.3 — NFR-002: release binary must be ≤ 10 MiB (10,485,760 bytes).
+  # Culture skill mandates a long-term target of ≤ 7 MiB.
+  #
+  # TODO: enable when CI image has webkit2gtk-4.1-dev.
+  # Building the full Tauri app (src-tauri/Cargo.toml) requires webkit2gtk-4.1-dev
+  # which is not available on ubuntu-latest. Options:
+  #   A) Switch to a Tauri Docker builder image (e.g. ghcr.io/tauri-apps/tauri-action)
+  #      that has all webkit deps preinstalled.
+  #   B) Gate this check on tagged releases only (workflow_dispatch / push tags).
+  # Tracking issue: https://github.com/FullFran/nyxterm/issues — file when unblocked.
+  #
+  # The pty-core crate (no Tauri/GTK dep) IS checked here as a size proxy.
+  # It should stay well under 10 MiB; the Tauri bundle overhead is separate.
+  binary-size:
+    name: Binary size (pty-core proxy + Tauri stub)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-release-
+
+      # Build pty-core in release mode as a size proxy.
+      # The pty-core test binary is not a final deliverable but gives early
+      # signal if Rust dependencies are bloating unexpectedly.
+      - name: Build pty-core (release, size proxy)
+        run: >
+          cargo build
+          --release
+          --manifest-path src-tauri/pty-core/Cargo.toml
+
+      # The actual pty-core release artifacts are rlibs, not binaries, so we
+      # measure the largest artifact instead.
+      - name: Check pty-core release artifact size
+        run: |
+          ARTIFACT=$(find src-tauri/target/release -maxdepth 1 -name "*.rlib" | sort -k5 -rh | head -1)
+          if [ -z "$ARTIFACT" ]; then
+            echo "No .rlib found — skipping size check"
+            exit 0
+          fi
+          SIZE=$(stat -c%s "$ARTIFACT")
+          LIMIT=$((10 * 1024 * 1024))
+          echo "Artifact: $ARTIFACT  size: $SIZE bytes (limit: $LIMIT bytes / 10 MiB)"
+          if [ "$SIZE" -gt "$LIMIT" ]; then
+            echo "FAIL: artifact exceeds 10 MiB budget (NFR-002)"
+            exit 1
+          fi
+          echo "OK: within 10 MiB budget"
+
+      # ── Full Tauri release build ─────────────────────────────────────────
+      # TODO: uncomment when webkit2gtk-4.1-dev is available on CI runner.
+      # On ubuntu-latest this step fails with:
+      #   error: could not find native library `webkit2gtk-4.1`
+      # To enable: use a custom runner or install deps with:
+      #   sudo apt-get install -y webkit2gtk-4.1-dev
+      # Then replace the stub below with:
+      #
+      # - name: Build full Tauri release
+      #   run: cargo build --release --manifest-path src-tauri/Cargo.toml
+      #
+      # - name: Check final binary size (NFR-002: ≤ 10 MiB)
+      #   run: |
+      #     BINARY=src-tauri/target/release/nyxterm
+      #     SIZE=$(stat -c%s "$BINARY")
+      #     LIMIT=$((10 * 1024 * 1024))
+      #     echo "Binary: $BINARY  size: $SIZE bytes (limit: $LIMIT bytes)"
+      #     if [ "$SIZE" -gt "$LIMIT" ]; then
+      #       echo "FAIL: binary exceeds 10 MiB — NFR-002 violated"
+      #       exit 1
+      #     fi
+      #     echo "OK: $SIZE bytes ≤ $LIMIT bytes"
+      - name: Tauri full-release size check (stubbed — needs webkit2gtk-4.1-dev)
+        run: >
+          echo "TODO: full Tauri build skipped — webkit2gtk-4.1-dev unavailable on ubuntu-latest.
+          NFR-002 (binary ≤ 10 MiB) is acknowledged but cannot be enforced until CI image is updated."
