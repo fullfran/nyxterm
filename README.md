@@ -6,6 +6,16 @@
 ![license](https://img.shields.io/badge/license-MIT-blue)
 ![phase](https://img.shields.io/badge/phase-0%20bootstrap-purple)
 
+## Quick start
+
+```bash
+# Prerequisites: Rust (1.70+), Node.js (18+), pnpm, libwebkit2gtk-4.1-dev (Linux)
+pnpm install
+pnpm tauri dev
+```
+
+The terminal opens a PTY session running your `$SHELL`. Type `echo hello` to verify the echo round-trip works.
+
 ## Why
 
 Today my terminal workflow is fragmented across:
