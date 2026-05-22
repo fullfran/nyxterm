@@ -61,16 +61,16 @@ mod tests {
     #[test]
     fn id_starts_at_one() {
         let state = make_state();
-        let id = state.insert(Arc::new(Session::new_stub(0)));
+        let id = state.insert(Arc::new(Session::new_stub()));
         assert_eq!(id, 1, "first session ID must be 1 (0 is reserved)");
     }
 
     #[test]
     fn id_is_monotonic() {
         let state = make_state();
-        let id1 = state.insert(Arc::new(Session::new_stub(0)));
-        let id2 = state.insert(Arc::new(Session::new_stub(0)));
-        let id3 = state.insert(Arc::new(Session::new_stub(0)));
+        let id1 = state.insert(Arc::new(Session::new_stub()));
+        let id2 = state.insert(Arc::new(Session::new_stub()));
+        let id3 = state.insert(Arc::new(Session::new_stub()));
         assert!(id1 < id2 && id2 < id3, "IDs must be strictly increasing");
         assert_eq!(id1, 1);
         assert_eq!(id2, 2);
@@ -80,17 +80,17 @@ mod tests {
     #[test]
     fn insert_get_remove_roundtrip() {
         let state = make_state();
-        let session = Arc::new(Session::new_stub(0));
+        let session = Arc::new(Session::new_stub());
         let id = state.insert(session);
 
-        // ID is assigned by insert, not by the stub constructor.
-        let got = state.get(id).expect("session must be present after insert");
-        assert_eq!(got.id, 0); // stub's own field; insert doesn't mutate it
+        // Session is reachable by the inserted ID.
+        state.get(id).expect("session must be present after insert");
+        state.remove(id).expect("remove must return the session");
 
-        let removed = state.remove(id).expect("remove must return the session");
-        assert_eq!(removed.id, 0);
-
-        assert!(state.get(id).is_none(), "session must be absent after remove");
+        assert!(
+            state.get(id).is_none(),
+            "session must be absent after remove"
+        );
     }
 
     #[test]
@@ -103,7 +103,7 @@ mod tests {
     fn never_assigns_zero() {
         let state = make_state();
         for _ in 0..10 {
-            let id = state.insert(Arc::new(Session::new_stub(0)));
+            let id = state.insert(Arc::new(Session::new_stub()));
             assert_ne!(id, 0, "session ID 0 must never be assigned");
         }
     }

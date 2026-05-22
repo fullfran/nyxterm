@@ -14,9 +14,8 @@ import type { SessionId } from "./pty-bridge";
  *   mount: create term → open → fit → ptyOpen → wire onData/onInput
  *   unmount: ptyClose → term.dispose()
  *
- * Slice 1 omissions (added in later slices):
+ * Slice 2 omissions (added in later slices):
  *   - Resize listener / kickPty (slice 5)
- *   - onExit handler (slice 2)
  *   - WebGL addon (slice 7)
  */
 export function TerminalPane() {
@@ -40,7 +39,19 @@ export function TerminalPane() {
       try {
         const id = await ptyOpen(term.cols, term.rows, null, {
           onData: (bytes) => term.write(bytes),
-          onExit: (code) => term.writeln(`\r\n[exit ${code}]`),
+          onExit: (code) => {
+            // Display exit code per REQ-PTY-002; REQ-PTY-012 (§4.1).
+            term.write(`\r\n[exit ${code}]`);
+            // Clean up the session map entry on the backend (REQ-PTY-002).
+            // Guard against calling ptyClose twice if unmount also fires.
+            const sid = sessionIdRef.current;
+            if (sid != null) {
+              sessionIdRef.current = null;
+              void ptyClose(sid).catch((e) =>
+                console.warn("[nyxterm] ptyClose on exit failed:", e),
+              );
+            }
+          },
         });
         console.log("[nyxterm] pty_open returned id=", id);
 
@@ -65,7 +76,11 @@ export function TerminalPane() {
       console.log("[nyxterm] TerminalPane unmount");
       disposed = true;
       const id = sessionIdRef.current;
-      if (id != null) void ptyClose(id);
+      if (id != null) {
+        ptyClose(id).catch((e) =>
+          console.warn("[nyxterm] ptyClose on unmount failed:", e),
+        );
+      }
       term.dispose();
     };
   }, []);
