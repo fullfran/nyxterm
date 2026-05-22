@@ -3,7 +3,7 @@ import type { Terminal } from "@xterm/xterm";
 import type { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 
-import { createTerm } from "./xterm-setup";
+import { createTerm, attachWebgl } from "./xterm-setup";
 import { ptyOpen, ptyWrite, ptyResize, kickPty, ptyClose } from "./pty-bridge";
 import type { SessionId } from "./pty-bridge";
 
@@ -20,7 +20,7 @@ import type { SessionId } from "./pty-bridge";
  *   - term.onResize() → ptyResize (delivers real cols/rows after fit.fit())
  *
  * Slice 7 adds:
- *   - WebGL addon
+ *   - WebGL addon via attachWebgl() — GPU rendering, 250 ms context-loss re-attach
  */
 export function TerminalPane() {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -31,8 +31,12 @@ export function TerminalPane() {
   useEffect(() => {
     console.log("[nyxterm] TerminalPane mount");
     const { term, fit } = createTerm();
+    // open() must come before attachWebgl() — WebGL requires the canvas in the DOM.
     term.open(containerRef.current!);
     fit.fit();
+    // Attach WebGL renderer after open+fit. Falls back to canvas silently on failure.
+    // Addresses Wayland sluggishness (nyxterm/dev-environment). Design §4.3.
+    attachWebgl(term);
     termRef.current = term;
     fitRef.current = fit;
     console.log("[nyxterm] xterm opened", { cols: term.cols, rows: term.rows });
