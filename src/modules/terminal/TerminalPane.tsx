@@ -76,7 +76,11 @@ export function TerminalPane() {
       console.log("[nyxterm] TerminalPane unmount");
       disposed = true;
       const id = sessionIdRef.current;
-      if (id != null) void ptyClose(id);
+      if (id != null) {
+        ptyClose(id).catch((e) =>
+          console.warn("[nyxterm] ptyClose on unmount failed:", e),
+        );
+      }
       term.dispose();
     };
   }, []);

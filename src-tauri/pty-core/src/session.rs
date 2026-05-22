@@ -58,8 +58,12 @@ pub struct SessionThreads {
 /// INDEPENDENT. Neither is ever acquired while holding the other.
 ///
 /// Slice 2 adds: `killer`, `done`, `on_exit` alongside the existing fields.
+///
+/// Note on identity: the canonical session ID is the HashMap key inside
+/// `PtyState`, not a field here. Storing it on `Session` would require
+/// post-construction mutation (chicken/egg with `PtyState::insert`) without
+/// adding any production value.
 pub struct Session {
-    pub id: u32,
     /// Serialises concurrent `pty_write` calls (NFR-005). Independent of `pending`.
     pub writer: Arc<Mutex<Box<dyn Write + Send>>>,
     /// Coalescing buffer shared reader → flusher. Independent of `writer`.
@@ -84,7 +88,6 @@ impl Session {
     /// Constructs a session ready to have its threads started.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        id: u32,
         writer: Box<dyn Write + Send>,
         pending: Arc<(Mutex<Vec<u8>>, Condvar)>,
         on_data: Arc<dyn Fn(Vec<u8>) + Send + Sync>,
@@ -93,7 +96,6 @@ impl Session {
         on_exit: Arc<dyn Fn(i32) + Send + Sync>,
     ) -> Self {
         Self {
-            id,
             writer: Arc::new(Mutex::new(writer)),
             pending,
             on_data,
@@ -142,10 +144,9 @@ impl Drop for Session {
 impl Session {
     /// Stub session for unit tests that don't need a real PTY.
     /// All I/O is a no-op; killer is a stub that always succeeds.
-    pub fn new_stub(expected_id: u32) -> Self {
+    pub fn new_stub() -> Self {
         use std::sync::atomic::AtomicBool;
         Self {
-            id: expected_id,
             writer: Arc::new(Mutex::new(Box::new(std::io::sink()))),
             pending: Arc::new((Mutex::new(Vec::new()), Condvar::new())),
             on_data: Arc::new(|_bytes| {}),

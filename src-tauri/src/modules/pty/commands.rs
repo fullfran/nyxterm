@@ -103,7 +103,6 @@ pub async fn pty_open(
     };
 
     let session = Arc::new(Session::new(
-        0, // placeholder; real ID assigned by PtyState::insert below
         master_writer,
         Arc::clone(&pending),
         Arc::clone(&on_data_fn),
