@@ -1,6 +1,7 @@
 // PTY core library — no Tauri dependency.
 // Contains all PTY logic that can be unit-tested without a webview.
 pub mod backend;
+pub mod da_filter;
 pub mod error;
 pub mod flusher;
 pub mod reader;
