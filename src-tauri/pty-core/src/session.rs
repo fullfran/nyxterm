@@ -278,6 +278,8 @@ mod tests {
     #[test]
     fn session_resize_zero_dimensions() {
         let session = Session::new_stub();
-        session.resize(0, 0).expect("resize with 0x0 must not panic");
+        session
+            .resize(0, 0)
+            .expect("resize with 0x0 must not panic");
     }
 }
