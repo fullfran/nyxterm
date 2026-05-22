@@ -25,6 +25,29 @@
 import type { Binding, ActionId, Chord } from "./types";
 
 // ---------------------------------------------------------------------------
+// Platform normalization hook (REQ-KB-NFR-004)
+// ---------------------------------------------------------------------------
+
+/**
+ * macOS port hook — no-op for Linux / Phase 1.
+ *
+ * TODO(macOS-port): when platform === 'darwin', remap ctrl → meta for
+ * relevant bindings so that Cmd+Shift+C / Cmd+Shift+V etc. map to the same
+ * actions the user expects on macOS. For Phase 1 we target Linux/glibc only;
+ * macOS port is future work.
+ *
+ * Hook point: this is where the platform check would branch the default chord
+ * generation — e.g. replace "ctrl+" prefix with "meta+" for ghostty-origin
+ * bindings. The tmux-origin bindings (Ctrl+Shift+X) remain ctrl on macOS
+ * because Cmd+Shift is not a standard tmux convention there.
+ *
+ * REQ-KB-NFR-004: The engine must produce identical behavior on Linux/macOS;
+ * a platform switch hook in defaults.ts must be stubbed even if not activated.
+ */
+const PLATFORM_NORMALIZATION_HOOK = false; // no-op for Linux/Phase 1
+void PLATFORM_NORMALIZATION_HOOK; // suppress unused-variable warning
+
+// ---------------------------------------------------------------------------
 // Type-safe chord builder
 // ---------------------------------------------------------------------------
 
