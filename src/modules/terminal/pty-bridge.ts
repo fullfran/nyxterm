@@ -10,9 +10,6 @@ export interface PtyHandlers {
 /**
  * Open a new PTY session running $SHELL.
  *
- * Slice 1: `onExit` handler is accepted here for API completeness but the
- * Rust backend does not wire `on_exit` until PR Slice 2.
- *
  * The `on_data` Channel delivers raw ArrayBuffer frames (no base64).
  * See REQ-PTY-012.
  */
@@ -25,7 +22,6 @@ export async function ptyOpen(
   const onData = new Channel<ArrayBuffer>();
   onData.onmessage = (buf) => handlers.onData(new Uint8Array(buf));
 
-  // on_exit channel: wired in Slice 2; stub for now
   const onExit = new Channel<number>();
   onExit.onmessage = (code) => handlers.onExit(code);
 
@@ -34,7 +30,7 @@ export async function ptyOpen(
     rows,
     cwd,
     onData,
-    // Slice 2 will add onExit to the Rust command signature
+    onExit,
   });
   return id;
 }
