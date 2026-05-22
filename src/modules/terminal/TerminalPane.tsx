@@ -4,19 +4,23 @@ import type { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 
 import { createTerm } from "./xterm-setup";
-import { ptyOpen, ptyWrite, ptyClose } from "./pty-bridge";
+import { ptyOpen, ptyWrite, ptyResize, kickPty, ptyClose } from "./pty-bridge";
 import type { SessionId } from "./pty-bridge";
 
 /**
  * Full-bleed terminal pane.
  *
  * Lifecycle:
- *   mount: create term → open → fit → ptyOpen → wire onData/onInput
+ *   mount: create term → open → fit → ptyOpen → wire onData/onInput/resize
+ *   resize: fit.fit() → ptyResize(real size) → kickPty(+1/restore)
  *   unmount: ptyClose → term.dispose()
  *
- * Slice 2 omissions (added in later slices):
- *   - Resize listener / kickPty (slice 5)
- *   - WebGL addon (slice 7)
+ * Slice 5 adds:
+ *   - window 'resize' listener with 50 ms debounce → kickPty
+ *   - term.onResize() → ptyResize (delivers real cols/rows after fit.fit())
+ *
+ * Slice 7 adds:
+ *   - WebGL addon
  */
 export function TerminalPane() {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -66,15 +70,50 @@ export function TerminalPane() {
             console.error("[nyxterm] pty_write failed", e),
           );
         });
+        // Forward xterm resize events (triggered by fit.fit()) to the backend.
+        // This delivers the real dimensions after every FitAddon layout pass.
+        // REQ-PTY-007 / design §4.1.
+        term.onResize(({ cols, rows }) => {
+          void ptyResize(id, cols, rows).catch((e) =>
+            console.warn("[nyxterm] ptyResize failed", e),
+          );
+        });
       } catch (e) {
         console.error("[nyxterm] pty_open failed:", e);
         term.writeln(`\r\n\x1b[31m[nyxterm] pty_open failed: ${e}\x1b[0m`);
       }
     })();
 
+    // Window resize handler: reflow xterm, forward new dimensions, then kickPty.
+    // Debounced at 50 ms to avoid flooding pty_resize during continuous resize.
+    // Design §4.1, §5: fit.fit() → ptyResize → kickPty ordering.
+    let resizeTimer: ReturnType<typeof setTimeout> | null = null;
+    const onWindowResize = () => {
+      if (resizeTimer !== null) clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => {
+        resizeTimer = null;
+        const fit = fitRef.current;
+        const term = termRef.current;
+        const id = sessionIdRef.current;
+        if (!fit || !term || id == null) return;
+        fit.fit();
+        // kickPty guarantees two SIGWINCH events even if dims are unchanged.
+        // The +1/restore pattern satisfies REQ-PTY-007 Scenario 2.
+        void kickPty(id, term.cols, term.rows).catch((e) =>
+          console.warn("[nyxterm] kickPty failed", e),
+        );
+      }, 50);
+    };
+    window.addEventListener("resize", onWindowResize);
+
     return () => {
       console.log("[nyxterm] TerminalPane unmount");
       disposed = true;
+      window.removeEventListener("resize", onWindowResize);
+      if (resizeTimer !== null) {
+        clearTimeout(resizeTimer);
+        resizeTimer = null;
+      }
       const id = sessionIdRef.current;
       if (id != null) {
         ptyClose(id).catch((e) =>

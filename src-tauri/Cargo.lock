@@ -2202,6 +2202,8 @@ dependencies = [
 name = "nyxterm-pty-core"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "libc",
  "mockall",
  "portable-pty",
  "thiserror 2.0.18",
