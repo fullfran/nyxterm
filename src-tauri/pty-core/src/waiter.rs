@@ -8,6 +8,56 @@ use std::{
 
 use portable_pty::Child;
 
+/// Map a `strsignal(3)` name string to a POSIX signal number.
+///
+/// portable-pty's `ExitStatus::signal()` returns the string produced by
+/// `libc::strsignal()` — e.g. `"Interrupt"` for SIGINT, `"Killed"` for SIGKILL.
+/// These are the canonical libc signal descriptions on Linux (glibc).
+///
+/// Returns `Some(128 + signum)` for known signals, `None` for unknown ones
+/// (caller falls back to `exit_code()`).
+///
+/// Signal numbers per POSIX / Linux (signal(7)):
+///   SIGHUP=1, SIGINT=2, SIGQUIT=3, SIGILL=4, SIGABRT=6, SIGFPE=8,
+///   SIGKILL=9, SIGUSR1=10, SIGSEGV=11, SIGUSR2=12, SIGPIPE=13,
+///   SIGALRM=14, SIGTERM=15, SIGCONT=18, SIGTSTP=20.
+pub fn map_signal_name(name: &str) -> Option<i32> {
+    let signum = match name {
+        "Hangup" => 1,                   // SIGHUP
+        "Interrupt" => 2,                // SIGINT  → exit 130
+        "Quit" => 3,                     // SIGQUIT → exit 131
+        "Illegal instruction" => 4,      // SIGILL
+        "Aborted" | "Abort trap" => 6,   // SIGABRT
+        "Floating point exception" => 8, // SIGFPE
+        "Killed" => 9,                   // SIGKILL → exit 137
+        "User defined signal 1" => 10,   // SIGUSR1
+        "Segmentation fault" => 11,      // SIGSEGV
+        "User defined signal 2" => 12,   // SIGUSR2
+        "Broken pipe" => 13,             // SIGPIPE
+        "Alarm clock" => 14,             // SIGALRM
+        "Terminated" => 15,              // SIGTERM
+        "Continued" => 18,               // SIGCONT
+        "Stopped" | "Stopped (signal)" | "Stopped (tty input)" | "Stopped (tty output)" => 20, // SIGTSTP/SIGSTOP
+        _ => return None,
+    };
+    Some(128 + signum)
+}
+
+/// Compute the exit code for a completed child.
+///
+/// - Normal exit (`signal() == None`): returns `exit_code()` as i32.
+/// - Signal exit (`signal() == Some(name)`): returns `128 + signum` per the
+///   POSIX convention (REQ-PTY-002 Scenario 2). Falls back to `exit_code()`
+///   when the signal name is unrecognised.
+fn compute_exit_code(status: &portable_pty::ExitStatus) -> i32 {
+    if let Some(sig_name) = status.signal() {
+        if let Some(code) = map_signal_name(sig_name) {
+            return code;
+        }
+    }
+    status.exit_code() as i32
+}
+
 /// Waiter thread body — blocks on `child.wait()`, then coordinates shutdown.
 ///
 /// Shutdown ordering (design §2.4 steps 1–5):
@@ -19,11 +69,10 @@ use portable_pty::Child;
 ///      flusher wakes and drains the last bytes.
 ///   5. Waiter emits the exit code via `on_exit`, then returns.
 ///
-/// Exit code convention (Unix):
+/// Exit code convention (Unix, REQ-PTY-002 Scenario 2):
 ///   - Normal exit: the value from `ExitStatus::exit_code()` (0–255).
-///   - Signal: `ExitStatus::signal()` is `Some(sig)` → we emit `-(sig as i32)`
-///     to indicate a signal-terminated process. Callers can detect this by
-///     checking `code < 0`.
+///   - Signal: `128 + signum` (e.g. SIGINT=130, SIGKILL=137, SIGQUIT=131).
+///     Derived via `map_signal_name()` from portable-pty's signal name string.
 ///
 /// Note: the waiter thread MUST NOT block the reader or flusher threads.
 /// It runs on its own OS thread and only touches `reader_handle` (by joining it)
@@ -38,17 +87,7 @@ pub fn waiter_thread(
     // Block until the child process exits. This is the canonical blocking wait —
     // we intentionally run on a dedicated thread so we never block reader/flusher.
     let exit_code = match child.wait() {
-        Ok(status) => {
-            // portable-pty ExitStatus: for normal exits, exit_code() returns the
-            // actual code (e.g. 42 for `exit 42`). For signal-killed processes on
-            // Unix, portable-pty sets code=1 and signal=Some("Signal name"). We
-            // emit exit_code() as i32 which covers normal exits correctly.
-            // Signal-killed processes emit 1 rather than 128+sig because
-            // portable-pty encodes signal names as strings, not numbers. This is
-            // a known limitation; Slice 5/6 integration tests will validate the
-            // signal path directly.
-            status.exit_code() as i32
-        }
+        Ok(status) => compute_exit_code(&status),
         Err(_) => -1, // child.wait() failed — treat as abnormal exit
     };
 
@@ -77,16 +116,21 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
-    use super::waiter_thread;
+    use super::{map_signal_name, waiter_thread};
     use portable_pty::{Child, ChildKiller, ExitStatus};
 
     // ─── Fake child for unit testing ──────────────────────────────────────────
 
-    /// A fake `Child` that returns a fixed exit code after an optional delay.
+    /// A fake `Child` that returns a fixed exit code or a signal name.
+    ///
+    /// Use `with_code(n)` for normal exit or `with_signal_name("Killed")` etc.
+    /// Signal name strings must match `strsignal(3)` output (e.g. "Killed",
+    /// "Interrupt", "Quit") — portable-pty converts those via its `From<ExitStatus>`.
     #[derive(Debug)]
     struct FakeChild {
         exit_code: u32,
-        signal: Option<u32>,
+        /// When Some, `make_status()` calls `ExitStatus::with_signal(name)`.
+        signal_name: Option<&'static str>,
         delay_ms: u64,
     }
 
@@ -94,17 +138,27 @@ mod tests {
         fn with_code(code: u32) -> Box<Self> {
             Box::new(Self {
                 exit_code: code,
-                signal: None,
+                signal_name: None,
                 delay_ms: 0,
             })
         }
 
-        fn with_signal(sig: u32) -> Box<Self> {
+        /// Build a `FakeChild` that exits via a signal name string —
+        /// use the actual `strsignal(3)` string (e.g. `"Killed"` for SIGKILL).
+        fn with_signal_name(sig_name: &'static str) -> Box<Self> {
             Box::new(Self {
                 exit_code: 0,
-                signal: Some(sig),
+                signal_name: Some(sig_name),
                 delay_ms: 0,
             })
+        }
+
+        fn make_status(&self) -> ExitStatus {
+            if let Some(name) = self.signal_name {
+                ExitStatus::with_signal(name)
+            } else {
+                ExitStatus::with_exit_code(self.exit_code)
+            }
         }
     }
 
@@ -115,7 +169,7 @@ mod tests {
         fn clone_killer(&self) -> Box<dyn ChildKiller + Send + Sync> {
             Box::new(FakeChild {
                 exit_code: self.exit_code,
-                signal: self.signal,
+                signal_name: self.signal_name,
                 delay_ms: 0,
             })
         }
@@ -135,18 +189,6 @@ mod tests {
 
         fn process_id(&self) -> Option<u32> {
             None // no real process in unit tests
-        }
-    }
-
-    impl FakeChild {
-        fn make_status(&self) -> ExitStatus {
-            if self.signal.is_some() {
-                // portable-pty with_signal takes a &str signal name.
-                // We use a generic sentinel to simulate signal-killed.
-                ExitStatus::with_signal("Fake")
-            } else {
-                ExitStatus::with_exit_code(self.exit_code)
-            }
         }
     }
 
@@ -189,17 +231,21 @@ mod tests {
         let on_exit: Arc<dyn Fn(i32) + Send + Sync> =
             Arc::new(move |code| *received_clone.lock().unwrap() = Some(code));
 
-        // portable-pty with_signal sets code=1; waiter emits exit_code() = 1.
+        // SIGKILL (9) → portable-pty signal name "Killed" → map_signal_name → 128+9=137.
         waiter_thread(
-            FakeChild::with_signal(9),
+            FakeChild::with_signal_name("Killed"),
             noop_reader(),
             Arc::clone(&pending),
             Arc::clone(&done),
             on_exit,
         );
 
-        // exit_code() for a signal-killed FakeChild is 1 (portable-pty's encoding).
-        assert_eq!(*received.lock().unwrap(), Some(1));
+        // REQ-PTY-002 Scenario 2: signal-killed process emits 128+signum.
+        assert_eq!(
+            *received.lock().unwrap(),
+            Some(137),
+            "SIGKILL (strsignal='Killed') should map to exit code 137 (128+9)"
+        );
     }
 
     #[test]
@@ -275,6 +321,76 @@ mod tests {
             *woke.lock().unwrap(),
             "watcher must have seen done=true via condvar"
         );
+    }
+
+    // ─── map_signal_name tests ────────────────────────────────────────────────
+
+    #[test]
+    fn map_signal_name_sigint_gives_130() {
+        // "Interrupt" is libc::strsignal(SIGINT=2) on Linux.
+        assert_eq!(map_signal_name("Interrupt"), Some(130));
+    }
+
+    #[test]
+    fn map_signal_name_sigkill_gives_137() {
+        assert_eq!(map_signal_name("Killed"), Some(137));
+    }
+
+    #[test]
+    fn map_signal_name_sigquit_gives_131() {
+        assert_eq!(map_signal_name("Quit"), Some(131));
+    }
+
+    #[test]
+    fn map_signal_name_sigtstp_gives_148() {
+        // "Stopped" is libc::strsignal(SIGTSTP=20) on Linux.
+        assert_eq!(map_signal_name("Stopped"), Some(148));
+    }
+
+    #[test]
+    fn map_signal_name_sigterm_gives_143() {
+        assert_eq!(map_signal_name("Terminated"), Some(143));
+    }
+
+    #[test]
+    fn map_signal_name_unknown_returns_none() {
+        assert_eq!(map_signal_name("SomeFutureSignal"), None);
+        assert_eq!(map_signal_name(""), None);
+        assert_eq!(map_signal_name("Fake"), None);
+    }
+
+    #[test]
+    fn map_signal_name_all_known_signals_round_trip() {
+        // Verify every entry in the map returns Some(128 + n) and the signum
+        // is in the expected range.
+        let known: &[(&str, i32)] = &[
+            ("Hangup", 129),
+            ("Interrupt", 130),
+            ("Quit", 131),
+            ("Illegal instruction", 132),
+            ("Aborted", 134),
+            ("Abort trap", 134),
+            ("Floating point exception", 136),
+            ("Killed", 137),
+            ("User defined signal 1", 138),
+            ("Segmentation fault", 139),
+            ("User defined signal 2", 140),
+            ("Broken pipe", 141),
+            ("Alarm clock", 142),
+            ("Terminated", 143),
+            ("Continued", 146),
+            ("Stopped", 148),
+            ("Stopped (signal)", 148),
+            ("Stopped (tty input)", 148),
+            ("Stopped (tty output)", 148),
+        ];
+        for &(name, expected) in known {
+            assert_eq!(
+                map_signal_name(name),
+                Some(expected),
+                "signal name '{name}' should map to {expected}"
+            );
+        }
     }
 
     /// Integration test (ignored — requires a real PTY, run in CI with
