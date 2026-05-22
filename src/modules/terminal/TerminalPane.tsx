@@ -7,6 +7,8 @@ import { createTerm, attachWebgl } from "./xterm-setup";
 import { ptyOpen, ptyWrite, ptyResize, kickPty, ptyClose } from "./pty-bridge";
 import type { SessionId } from "./pty-bridge";
 import { createKeybindsEngine } from "../keybinds";
+import { registerTerminalActions } from "../keybinds/actions/terminal";
+import { registerStubs } from "../keybinds/actions/stubs";
 
 /**
  * Full-bleed terminal pane.
@@ -23,9 +25,10 @@ import { createKeybindsEngine } from "../keybinds";
  * Slice 7 adds:
  *   - WebGL addon via attachWebgl() — GPU rendering, 250 ms context-loss re-attach
  *
- * Epic #26 (keybinds PR1) adds:
- *   - createKeybindsEngine + loadDefaults after term.open(), before fit.fit()
- *   - detach before term.dispose() on unmount (design §4.2)
+ * Epic #26 (keybinds PR2) adds:
+ *   - Group A terminal action handlers + Group B/C stubs via actions/terminal.ts + stubs.ts
+ *   - getActionContext injected into engine so handlers receive live term/fit/sessionId
+ *   - termActionsDisposable + stubsDisposable disposed BEFORE detach + term.dispose()
  */
 export function TerminalPane() {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -40,9 +43,34 @@ export function TerminalPane() {
     term.open(containerRef.current!);
 
     // Attach keybinds engine AFTER open(), BEFORE fit.fit() (design §4.2).
-    // Epic #26 PR1: skeleton — matched chords log + consume; real handlers in PR2.
-    const engine = createKeybindsEngine();
+    // Epic #26 PR2: Group A real handlers + Group B/C stubs registered.
+    //
+    // getActionContext is called at dispatch time so it sees the live sessionId
+    // (which resolves after ptyOpen), current term, and fit refs.
+    const engine = createKeybindsEngine({
+      getActionContext: () => {
+        const t = termRef.current;
+        const f = fitRef.current;
+        if (!t || !f) return null;
+        return {
+          term: t,
+          fit: f,
+          sessionId: sessionIdRef.current,
+          ptyWrite: (data: string) => {
+            const id = sessionIdRef.current;
+            if (id == null) return Promise.resolve();
+            return ptyWrite(id, data);
+          },
+        };
+      },
+    });
     engine.loadDefaults();
+
+    // Register Group A terminal handlers + Group B/C stubs BEFORE attach
+    // so handlers are live on the first keypress. Design §2.1 ordering invariants.
+    const termActionsDisposable = registerTerminalActions(engine);
+    const stubsDisposable = registerStubs(engine);
+
     engine.attachToTerminal(term);
 
     fit.fit();
@@ -136,6 +164,10 @@ export function TerminalPane() {
           console.warn("[nyxterm] ptyClose on unmount failed:", e),
         );
       }
+      // Dispose action handlers BEFORE detach (cleanup order: handlers → detach → dispose).
+      // Design §2.1, REQ-KB-005.
+      termActionsDisposable.dispose();
+      stubsDisposable.dispose();
       // Detach keybinds engine BEFORE term.dispose() (design §4.2, REQ-KB-005).
       engine.detach(term);
       term.dispose();
