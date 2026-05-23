@@ -34,9 +34,12 @@ import type {
 } from "./types";
 import { DEFAULT_BINDINGS } from "./defaults";
 import { normalizeKeyEvent } from "./normalize";
+import { imeGuard, webkitHijackPrevent } from "./guards";
 import { ActionRegistry } from "./registry";
 import { parseConfigText } from "./config-loader";
 import { resolveBindings } from "./resolver";
+import { validateConfigEntries } from "./validation";
+import { RESERVED_CHORDS } from "./reserved";
 
 // ---------------------------------------------------------------------------
 // Engine interface (public API)
@@ -173,14 +176,20 @@ export function createKeybindsEngine(deps: EngineDeps = {}): KeybindsEngine {
     const { invoke } = await import("@tauri-apps/api/core");
     const text = await invoke<string>("config_read");
     const { entries, warnings: parseWarnings } = parseConfigText(text);
+    // Validate: filter out reserved chords + unknown action_ids (REQ-KB-032..034)
+    const { valid, rejected } = validateConfigEntries(entries);
     const { active, warnings: resolveWarnings } = resolveBindings(
       DEFAULT_BINDINGS,
-      entries,
+      valid,
     );
     applyResolvedBindings(active);
-    // Log any warnings (toast aggregation deferred to PR4 scope)
+    // Log parse warnings
     for (const w of parseWarnings) {
       console.warn(`[keybinds] config parse warning (line ${w.lineNumber}): ${w.reason}`);
+    }
+    // Log validation rejections (toast aggregation stub — PR5 scope)
+    for (const r of rejected) {
+      console.warn(`[keybinds] config validation rejected (line ${r.entry.lineNumber}): ${r.reason}`);
     }
     for (const w of resolveWarnings) {
       console.warn(`[keybinds] config resolve warning: ${w.reason}`);
@@ -195,10 +204,15 @@ export function createKeybindsEngine(deps: EngineDeps = {}): KeybindsEngine {
     const unlisten = await listen<string>("keybinds-changed", (event) => {
       // Synchronous re-resolve on event (REQ-KB-040: no deferral).
       const { entries, warnings: pw } = parseConfigText(event.payload);
-      const { active, warnings: rw } = resolveBindings(DEFAULT_BINDINGS, entries);
+      // Validate between parse and resolve (REQ-KB-032..034)
+      const { valid, rejected } = validateConfigEntries(entries);
+      const { active, warnings: rw } = resolveBindings(DEFAULT_BINDINGS, valid);
       applyResolvedBindings(active);
       for (const w of pw) {
         console.warn(`[keybinds] hot-reload parse warning (line ${w.lineNumber}): ${w.reason}`);
+      }
+      for (const r of rejected) {
+        console.warn(`[keybinds] hot-reload validation rejected (line ${r.entry.lineNumber}): ${r.reason}`);
       }
       for (const w of rw) {
         console.warn(`[keybinds] hot-reload resolve warning: ${w.reason}`);
@@ -225,11 +239,18 @@ export function createKeybindsEngine(deps: EngineDeps = {}): KeybindsEngine {
 
   function createCustomKeyHandler(): (event: KeyboardEvent) => boolean {
     return (event: KeyboardEvent): boolean => {
-      // Normalize the event to a chord
-      const chord: Chord | null = normalizeKeyEvent(event);
+      // Guard 1: IME composing — pass through to PTY untouched (REQ-KB-029)
+      if (imeGuard(event)) return true;
 
-      // IME pass-through: return true so xterm.js forwards the event to PTY
+      // Normalize the event to a chord (returns null for composing events,
+      // already guarded above, but null can occur for other exotic keys)
+      const chord: Chord | null = normalizeKeyEvent(event);
       if (chord === null) return true;
+
+      // Guard 2: WebKit hijack — preventDefault even if no binding exists.
+      // e.g. Ctrl+R: browser reload blocked, but chord falls through to PTY
+      // for readline reverse-search if no binding is registered. (REQ-KB-030, REQ-KB-031)
+      webkitHijackPrevent(event, chord);
 
       // Look up the chord in the active binding map
       const actionId = activeMap.get(chord);
@@ -312,6 +333,16 @@ export function createKeybindsEngine(deps: EngineDeps = {}): KeybindsEngine {
   // -------------------------------------------------------------------------
 
   function registerAction(id: ActionId, handler: ActionHandler): IDisposable {
+    // REQ-KB-035: defense-in-depth — if any chord currently bound to this
+    // action_id is a reserved chord, throw TypeError. This should never happen
+    // after PR4 validation is in place, but catches programmatic misuse.
+    for (const [chord, boundId] of activeMap) {
+      if (boundId === id && RESERVED_CHORDS.has(chord)) {
+        throw new TypeError(
+          `registerAction: action "${id}" is bound to reserved chord "${chord}" — reserved chords MUST NOT be captured by the engine (REQ-KB-035)`,
+        );
+      }
+    }
     const disposable = registry.register(id, handler);
     instanceDisposables.push(disposable);
     return disposable;

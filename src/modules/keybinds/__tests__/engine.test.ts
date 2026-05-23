@@ -89,6 +89,8 @@ function keyEvent(overrides: {
     altKey: overrides.altKey ?? false,
     metaKey: overrides.metaKey ?? false,
     isComposing: overrides.isComposing ?? false,
+    // Guards may call preventDefault — provide a no-op so tests don't crash
+    preventDefault: vi.fn(),
   };
 }
 
