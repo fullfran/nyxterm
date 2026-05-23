@@ -6,14 +6,15 @@ import "@xterm/xterm/css/xterm.css";
 import { createTerm, attachWebgl } from "./xterm-setup";
 import { ptyOpen, ptyWrite, ptyResize, kickPty, ptyClose } from "./pty-bridge";
 import type { SessionId } from "./pty-bridge";
+import { createKeybindsEngine } from "../keybinds";
 
 /**
  * Full-bleed terminal pane.
  *
  * Lifecycle:
- *   mount: create term → open → fit → ptyOpen → wire onData/onInput/resize
+ *   mount: create term → open → attachKeybinds → fit → attachWebgl → ptyOpen
  *   resize: fit.fit() → ptyResize(real size) → kickPty(+1/restore)
- *   unmount: ptyClose → term.dispose()
+ *   unmount: keybinds.detach → ptyClose → term.dispose()
  *
  * Slice 5 adds:
  *   - window 'resize' listener with 50 ms debounce → kickPty
@@ -21,6 +22,10 @@ import type { SessionId } from "./pty-bridge";
  *
  * Slice 7 adds:
  *   - WebGL addon via attachWebgl() — GPU rendering, 250 ms context-loss re-attach
+ *
+ * Epic #26 (keybinds PR1) adds:
+ *   - createKeybindsEngine + loadDefaults after term.open(), before fit.fit()
+ *   - detach before term.dispose() on unmount (design §4.2)
  */
 export function TerminalPane() {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -33,6 +38,13 @@ export function TerminalPane() {
     const { term, fit } = createTerm();
     // open() must come before attachWebgl() — WebGL requires the canvas in the DOM.
     term.open(containerRef.current!);
+
+    // Attach keybinds engine AFTER open(), BEFORE fit.fit() (design §4.2).
+    // Epic #26 PR1: skeleton — matched chords log + consume; real handlers in PR2.
+    const engine = createKeybindsEngine();
+    engine.loadDefaults();
+    engine.attachToTerminal(term);
+
     fit.fit();
     // Attach WebGL renderer after open+fit. Falls back to canvas silently on failure.
     // Addresses Wayland sluggishness (nyxterm/dev-environment). Design §4.3.
@@ -124,6 +136,8 @@ export function TerminalPane() {
           console.warn("[nyxterm] ptyClose on unmount failed:", e),
         );
       }
+      // Detach keybinds engine BEFORE term.dispose() (design §4.2, REQ-KB-005).
+      engine.detach(term);
       term.dispose();
     };
   }, []);
