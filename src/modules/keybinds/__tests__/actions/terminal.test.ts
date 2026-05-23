@@ -12,10 +12,19 @@
  *  - scroll calls do NOT invoke ptyWrite
  *  - font ops call fitAddon.fit()
  *
- * REQ-KB-041..050 (Group A behaviors).
+ * T3.4 acceptance criteria (reload_config real implementation):
+ *  - invokes Tauri config_reload command
+ *  - swallows config_reload errors gracefully
+ *
+ * REQ-KB-041..051 (Group A behaviors), REQ-KB-037.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+
+// Mock @tauri-apps/api/core for reload_config tests
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn(),
+}));
 import {
   registerTerminalActions,
   DEFAULT_FONT_SIZE,
@@ -307,5 +316,40 @@ describe("registerTerminalActions", () => {
     for (const d of disposes) {
       expect(d).toHaveBeenCalledOnce();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests — reload_config real implementation (T3.4, REQ-KB-051, REQ-KB-037)
+// ---------------------------------------------------------------------------
+
+describe("terminal.reload_config (T3.4)", () => {
+  let invokeMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    invokeMock = invoke as ReturnType<typeof vi.fn>;
+    invokeMock.mockReset();
+  });
+
+  it("invokes Tauri config_reload command", async () => {
+    invokeMock.mockResolvedValue("");
+    const handlers = buildHandlerMap();
+    await handlers.get("terminal.reload_config")!(fakeEvent(), makeCtx().ctx);
+    expect(invokeMock).toHaveBeenCalledWith("config_reload");
+  });
+
+  it("does NOT throw when config_reload returns an error (graceful failure)", async () => {
+    invokeMock.mockRejectedValue(new Error("config_reload failed"));
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const handlers = buildHandlerMap();
+    // Must NOT throw
+    await expect(
+      handlers.get("terminal.reload_config")!(fakeEvent(), makeCtx().ctx),
+    ).resolves.toBeUndefined();
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("config_reload failed"),
+      expect.any(Error),
+    );
   });
 });

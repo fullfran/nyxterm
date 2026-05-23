@@ -26,3 +26,4 @@ nyxterm-pty-core = { path = "pty-core" }
 dirs = "6"
 
 [dev-dependencies]
+tempfile = "3"

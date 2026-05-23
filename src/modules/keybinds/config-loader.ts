@@ -1,7 +1,9 @@
 /**
- * config-loader.ts — Ghostty-style keybind config parser.
+ * config-loader.ts — Ghostty-style keybind config parser + loadConfig orchestrator.
  *
  * parseConfigText(text) → { entries: ConfigEntry[]; warnings: ConfigWarning[] }
+ * loadConfig()          → { entries: ConfigEntry[]; warnings: ConfigWarning[] }
+ *                          Invokes Tauri config_read, parses the result.
  *
  * Grammar (spec §4 ABNF):
  *   keybind-line = "keybind" *WSP "=" *WSP chord *WSP "=" *WSP target *WSP
@@ -22,9 +24,10 @@
  * design §4.6: two-layer validation — parse vs register). RESERVED_CHORDS
  * rejection happens in PR4 (validation slice).
  *
- * REQ-KB-010, REQ-KB-012, REQ-KB-013, spec §4.
+ * REQ-KB-010, REQ-KB-011, REQ-KB-012, REQ-KB-013, spec §4.
  */
 
+import { invoke } from "@tauri-apps/api/core";
 import type { Chord } from "./types";
 import { normalizeChord } from "./normalize";
 
@@ -289,4 +292,28 @@ function isValidActionRef(s: string): boolean {
   // Allow: word chars + dot + underscore, no leading/trailing dot, no double dot
   // Matches: "terminal.copy_to_clipboard", "pane.split_right", "foo", "foo_bar"
   return /^[a-z0-9][a-z0-9_]*(\.[a-z0-9][a-z0-9_]*)*$/.test(s);
+}
+
+// ---------------------------------------------------------------------------
+// loadConfig — Tauri-integrated orchestrator (T3.4)
+// ---------------------------------------------------------------------------
+
+/**
+ * Read the keybind config file via Tauri config_read command, then parse it.
+ *
+ * Returns parsed entries and any parse-time warnings.
+ * An empty string (file absent — REQ-KB-011) produces an empty entries array.
+ *
+ * This is the only function in this module that performs I/O.
+ * The engine calls this once at boot (REQ-KB-003 step 2-3) and again
+ * on each "keybinds-changed" event (REQ-KB-038).
+ *
+ * REQ-KB-010, REQ-KB-011.
+ */
+export async function loadConfig(): Promise<{
+  entries: ConfigEntry[];
+  warnings: ConfigWarning[];
+}> {
+  const text = await invoke<string>("config_read");
+  return parseConfigText(text);
 }
