@@ -1,0 +1,69 @@
+# nyxterm configuration file
+#
+# Location: ~/.config/nyxterm/config
+#
+# This file lets you override, extend, or unbind any default keybind
+# without rebuilding the app. nyxterm reads this file at startup and
+# every time you press Ctrl+Shift+, (reload_config).
+#
+# Format: keybind = <chord> = <action_id>
+#   chord       — modifiers sorted ctrl < alt < shift < meta, then key
+#   action_id   — see docs/keybinds.md for the full list
+#   unbind      — special target: removes the binding, lets chord fall to PTY
+#
+# Full grammar and ActionId reference: docs/keybinds.md
+#
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Clipboard / scroll (ghostty defaults) ────────────────────────────────────
+# keybind = ctrl+shift+c = terminal.copy_to_clipboard
+# keybind = ctrl+shift+v = terminal.paste_from_clipboard
+# keybind = ctrl+shift+up = terminal.scroll_page_up
+# keybind = ctrl+shift+down = terminal.scroll_page_down
+# keybind = ctrl+shift+home = terminal.scroll_to_top
+# keybind = ctrl+shift+end = terminal.scroll_to_bottom
+
+# ── Font size / config (ghostty defaults) ────────────────────────────────────
+# keybind = ctrl+plus = terminal.font_size_inc
+# keybind = ctrl+minus = terminal.font_size_dec
+# keybind = ctrl+0 = terminal.font_size_reset
+# keybind = ctrl+shift+comma = terminal.reload_config
+
+# ── Pane splits (tmux defaults) ──────────────────────────────────────────────
+# keybind = ctrl+shift+r = pane.split_right
+# keybind = ctrl+shift+f = pane.split_down
+# keybind = ctrl+shift+h = pane.navigate_left
+# keybind = ctrl+shift+j = pane.navigate_down
+# keybind = ctrl+shift+l = pane.navigate_right
+# keybind = ctrl+shift+w = pane.kill_pane
+# keybind = ctrl+shift+z = pane.zoom_pane
+
+# ── Tabs (tmux defaults) ─────────────────────────────────────────────────────
+# keybind = ctrl+shift+t = tab.new_tab
+# keybind = ctrl+tab = tab.next_tab
+# keybind = ctrl+shift+tab = tab.previous_tab
+
+# ── Sessions (tmux defaults) ─────────────────────────────────────────────────
+# keybind = ctrl+shift+e = session.new_session
+# keybind = ctrl+shift+n = session.rename_session
+# keybind = ctrl+shift+b = session.switch_last_session
+# keybind = ctrl+shift+s = session.picker
+# keybind = ctrl+shift+k = session.kill_session
+# keybind = ctrl+shift+d = session.detach
+
+# ── App popups (tmux defaults) ───────────────────────────────────────────────
+# keybind = ctrl+shift+g = app.popup_git
+# keybind = ctrl+shift+a = app.popup_ai
+# keybind = ctrl+shift+escape = app.copy_mode_enter
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Example customisations (uncomment and edit to taste):
+
+# Override: remap copy chord to also trigger paste (non-default)
+# keybind = ctrl+shift+c = terminal.paste_from_clipboard
+
+# Unbind: let ctrl+shift+t fall through to the PTY (e.g. if your shell uses it)
+# keybind = ctrl+shift+t = unbind
+
+# Extend: bind a chord not in the defaults
+# keybind = ctrl+shift+q = terminal.copy_to_clipboard
