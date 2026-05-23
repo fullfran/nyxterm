@@ -1,18 +1,46 @@
 /**
- * engine.test.ts — Unit tests for the keybinds engine skeleton.
+ * engine.test.ts — Unit tests for the keybinds engine.
  *
- * Covers:
+ * Covers (T1.4 — skeleton):
  *  - listBindings() returns 29 entries after loadDefaults()
  *  - Custom key handler returns true (passthrough) for unmatched chords
  *  - Custom key handler returns false (consume) for matched chords
  *  - IME events return true (passthrough)
  *  - registerAction / dispose cycle
  *
- * T1.4 acceptance criteria per tasks artifact.
+ * Covers (T2.3 — IDisposable completeness + dispatch):
+ *  - After dispose(), handler NOT invoked on chord
+ *  - Late registration: registered AFTER attach, invoked on next chord
+ *  - listBindings() count unchanged after handler dispose (bindings independent)
+ *  - Matched chord with no handler → console.warn + consume (REQ-KB-020)
+ *  - Warn-once: second press does NOT re-warn (REQ-KB-020 deduplicated)
+ *  - getActionContext: handler receives ctx on invocation
  */
 
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { createKeybindsEngine } from "../engine";
+import type { ActionContext } from "../types";
+
+// ---------------------------------------------------------------------------
+// console.warn spy teardown
+// ---------------------------------------------------------------------------
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
+// ---------------------------------------------------------------------------
+// Minimal ActionContext mock
+// ---------------------------------------------------------------------------
+
+function makeCtx(): ActionContext {
+  return {
+    term: {} as ActionContext["term"],
+    fit: {} as ActionContext["fit"],
+    ptyWrite: vi.fn().mockResolvedValue(undefined),
+    sessionId: 1,
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Minimal Terminal mock (xterm.js Terminal interface subset)
@@ -192,7 +220,8 @@ describe("custom key handler — consume matched chord", () => {
 describe("registerAction / dispose", () => {
   it("registered handler is invoked when chord matches", () => {
     const handler = vi.fn();
-    const engine = createKeybindsEngine();
+    const ctx = makeCtx();
+    const engine = createKeybindsEngine({ getActionContext: () => ctx });
     engine.loadDefaults();
     engine.registerAction("terminal.copy_to_clipboard", handler);
 
@@ -206,7 +235,8 @@ describe("registerAction / dispose", () => {
 
   it("disposed handler is NOT invoked after dispose()", () => {
     const handler = vi.fn();
-    const engine = createKeybindsEngine();
+    const ctx = makeCtx();
+    const engine = createKeybindsEngine({ getActionContext: () => ctx });
     engine.loadDefaults();
     const disposable = engine.registerAction("terminal.copy_to_clipboard", handler);
 
@@ -226,6 +256,104 @@ describe("registerAction / dispose", () => {
 
     // handler should still be at 1 (not called again after dispose)
     expect(handler).toHaveBeenCalledTimes(1);
+  });
+
+  // T2.3 — Late registration: registered AFTER attach, invoked on next chord
+  it("late registration: handler registered after attach is invoked on next chord", () => {
+    const ctx = makeCtx();
+    const engine = createKeybindsEngine({ getActionContext: () => ctx });
+    engine.loadDefaults();
+
+    const term = makeMockTerminal();
+    engine.attachToTerminal(term as never);
+
+    // Register handler AFTER attach
+    const handler = vi.fn();
+    engine.registerAction("terminal.copy_to_clipboard", handler);
+
+    // Next chord should invoke the late-registered handler
+    term.fireKey(keyEvent({ key: "C", ctrlKey: true, shiftKey: true }));
+    expect(handler).toHaveBeenCalledOnce();
+  });
+
+  // T2.3 — listBindings count unchanged after handler dispose
+  it("listBindings() count unchanged after handler dispose", () => {
+    const ctx = makeCtx();
+    const engine = createKeybindsEngine({ getActionContext: () => ctx });
+    engine.loadDefaults();
+
+    const disposable = engine.registerAction("terminal.copy_to_clipboard", vi.fn());
+    const bindingsBefore = engine.listBindings().length;
+
+    disposable.dispose();
+
+    const bindingsAfter = engine.listBindings().length;
+    // Bindings (chord→actionId map) are independent of handlers (actionId→handler map)
+    expect(bindingsAfter).toBe(bindingsBefore);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T2.3 — REQ-KB-020: matched chord with no handler → warn once + consume
+// ---------------------------------------------------------------------------
+
+describe("matched chord with no handler (REQ-KB-020)", () => {
+  it("returns false (consumed) when chord is matched but no handler registered", () => {
+    const engine = createKeybindsEngine();
+    engine.loadDefaults();
+    const term = makeMockTerminal();
+    engine.attachToTerminal(term as never);
+
+    const result = term.fireKey(keyEvent({ key: "C", ctrlKey: true, shiftKey: true }));
+    expect(result).toBe(false);
+  });
+
+  it("emits console.warn when matched chord has no handler", () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const engine = createKeybindsEngine();
+    engine.loadDefaults();
+    const term = makeMockTerminal();
+    engine.attachToTerminal(term as never);
+
+    term.fireKey(keyEvent({ key: "C", ctrlKey: true, shiftKey: true }));
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("no handler registered for"),
+      "terminal.copy_to_clipboard",
+    );
+  });
+
+  it("does NOT re-warn on second press of same chord (deduplication)", () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const engine = createKeybindsEngine();
+    engine.loadDefaults();
+    const term = makeMockTerminal();
+    engine.attachToTerminal(term as never);
+
+    term.fireKey(keyEvent({ key: "C", ctrlKey: true, shiftKey: true }));
+    term.fireKey(keyEvent({ key: "C", ctrlKey: true, shiftKey: true }));
+    term.fireKey(keyEvent({ key: "C", ctrlKey: true, shiftKey: true }));
+
+    const keybindWarns = warnSpy.mock.calls.filter((args) =>
+      String(args[0]).includes("no handler registered for"),
+    );
+    expect(keybindWarns).toHaveLength(1);
+  });
+
+  it("handler invoked on chord receives (event, ctx)", () => {
+    const ctx = makeCtx();
+    const engine = createKeybindsEngine({ getActionContext: () => ctx });
+    engine.loadDefaults();
+    const handler = vi.fn();
+    engine.registerAction("terminal.copy_to_clipboard", handler);
+
+    const term = makeMockTerminal();
+    engine.attachToTerminal(term as never);
+
+    const ev = keyEvent({ key: "C", ctrlKey: true, shiftKey: true });
+    term.fireKey(ev);
+
+    // Handler should have been called with (event, ctx)
+    expect(handler).toHaveBeenCalledWith(ev, ctx);
   });
 });
 

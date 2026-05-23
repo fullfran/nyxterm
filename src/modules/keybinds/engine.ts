@@ -1,20 +1,22 @@
 /**
- * engine.ts — Keybinds engine skeleton.
+ * engine.ts — Keybinds engine.
  *
  * createKeybindsEngine(deps?) returns an engine instance that:
  *  - Loads the 29-binding FullFran default factory
  *  - Attaches to a Terminal via term.attachCustomKeyEventHandler
  *  - Returns true (passthrough) for unmatched chords
- *  - Returns false (consume) and logs for matched chords (PR1 — no real handlers yet)
+ *  - Returns false (consume) for matched chords; dispatches to registered handler
  *  - Detaches cleanly on unmount
  *
- * PR1 scope: skeleton only — no real action handlers.
- *   Matched chords → console.log("[keybinds] matched:", actionId) + return false
+ * PR2 scope: adds Group A handler dispatch via deps.getActionContext().
+ *   Matched chord with handler → handler(event, ctx) (fire-and-forget)
+ *   Matched chord without handler → console.warn once + consume (REQ-KB-020)
  *   Unmatched chords → return true (pass to PTY)
- * Real Group A handlers land in T2.1 (PR Slice 2).
  *
- * Design §4.2 (attach timing), §4.3 (default factory), §4.4 (action ID namespace).
- * REQ-KB-001, REQ-KB-002, REQ-KB-004, REQ-KB-005, REQ-KB-008.
+ * Design §3.3 (handler dispatch), §4.2 (attach timing), §4.3 (default factory),
+ * §4.4 (action ID namespace).
+ * REQ-KB-001, REQ-KB-002, REQ-KB-004, REQ-KB-005, REQ-KB-008, REQ-KB-018,
+ * REQ-KB-020, REQ-KB-021, REQ-KB-022.
  */
 
 import type { Terminal } from "@xterm/xterm";
@@ -102,6 +104,14 @@ export function createKeybindsEngine(deps: EngineDeps = {}): KeybindsEngine {
   }
 
   // -------------------------------------------------------------------------
+  // Warn-once set for matched-but-unhandled actions (REQ-KB-020)
+  // -------------------------------------------------------------------------
+
+  // Tracks action IDs that have already emitted a "no handler" warning this
+  // session. Cleared on detach so that after a remount warnings re-fire once.
+  const warnedNoHandler = new Set<ActionId>();
+
+  // -------------------------------------------------------------------------
   // createCustomKeyHandler
   // -------------------------------------------------------------------------
 
@@ -120,14 +130,33 @@ export function createKeybindsEngine(deps: EngineDeps = {}): KeybindsEngine {
       if (actionId === undefined) return true;
 
       // Matched chord → consume key (return false)
-      // PR1: log only; real handlers land in T2.1
       const handler = registry.get(actionId);
       if (handler !== undefined) {
-        // Real handler registered (future PR2+)
-        void Promise.resolve(handler());
+        // Real handler registered — dispatch fire-and-forget with context.
+        // Design §3.3: pass (event, ctx) to the handler.
+        const ctx = deps.getActionContext?.() ?? null;
+        if (ctx !== null) {
+          try {
+            const result = handler(event, ctx);
+            if (result && typeof (result as Promise<void>).then === "function") {
+              (result as Promise<void>).catch((err) => {
+                console.error(`[keybinds] action ${actionId} threw:`, err);
+              });
+            }
+          } catch (err) {
+            console.error(`[keybinds] action ${actionId} threw:`, err);
+          }
+        } else {
+          // No context yet (e.g., PTY not open) — still consume the key.
+          console.debug(`[keybinds] no action context for ${actionId} — key consumed`);
+        }
       } else {
-        // Stub: log and consume — no PTY pass-through
-        console.log("[keybinds] matched:", actionId);
+        // REQ-KB-020: matched chord with no registered handler.
+        // Consume the key (return false) and warn once per action per session.
+        if (!warnedNoHandler.has(actionId)) {
+          warnedNoHandler.add(actionId);
+          console.warn("[keybinds] no handler registered for", actionId);
+        }
         deps.onStub?.(actionId);
       }
 
@@ -157,6 +186,8 @@ export function createKeybindsEngine(deps: EngineDeps = {}): KeybindsEngine {
       d.dispose();
     }
     instanceDisposables.length = 0;
+    // Clear warn-once set so warnings re-fire correctly on remount.
+    warnedNoHandler.clear();
 
     // We cannot fully "un-attach" an xterm.js custom key handler via
     // the public API in v5 — but we CAN replace it with a passthrough.

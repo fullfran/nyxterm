@@ -97,11 +97,42 @@ export interface Binding {
 }
 
 // ---------------------------------------------------------------------------
+// Action context (passed to handlers at dispatch time)
+// ---------------------------------------------------------------------------
+
+/**
+ * Runtime context passed to every action handler on invocation.
+ * Injected by the engine's dispatch path; Group A handlers receive it to
+ * access the terminal, fit addon, and PTY write function.
+ *
+ * Design §3.3: handler signature is (event, ctx) → void | Promise<void>.
+ */
+export interface ActionContext {
+  /** xterm.js Terminal instance — for getSelection, scroll*, clear, fontSize */
+  readonly term: import("@xterm/xterm").Terminal;
+  /** FitAddon instance — must call fit() after fontSize changes (SIGWINCH) */
+  readonly fit: import("@xterm/addon-fit").FitAddon;
+  /**
+   * Write data to the active PTY session.
+   * Already bound to the current sessionId; callers pass the string only.
+   */
+  readonly ptyWrite: (data: string) => Promise<void>;
+  /** Current PTY session ID; null if no session is active */
+  readonly sessionId: import("../terminal/pty-bridge").SessionId | null;
+}
+
+// ---------------------------------------------------------------------------
 // Action handler
 // ---------------------------------------------------------------------------
 
-/** An action handler is a synchronous or async function with no arguments */
-export type ActionHandler = () => void | Promise<void>;
+/**
+ * An action handler receives the triggering keyboard event and runtime context.
+ * Design §3.3: fire-and-forget at the engine boundary (engine wraps in void Promise).
+ */
+export type ActionHandler = (
+  event: KeyboardEvent,
+  ctx: ActionContext,
+) => void | Promise<void>;
 
 /** IDisposable contract — returned by registerAction, removes handler on dispose */
 export interface IDisposable {
@@ -139,19 +170,10 @@ export interface KeybindsState {
 export interface EngineDeps {
   /** Optional: called when a keybind action is matched and no handler is found */
   onStub?: (actionId: ActionId) => void;
-}
-
-// ---------------------------------------------------------------------------
-// Action context (passed to handlers in PR2+)
-// ---------------------------------------------------------------------------
-
-/**
- * Runtime context passed to action handlers when invoked.
- * Defined here so Group A handlers (PR2) can receive it without a types.ts change.
- */
-export interface ActionContext {
-  /** The chord that triggered the action */
-  readonly chord: Chord;
-  /** The original keyboard event */
-  readonly event: KeyboardEvent;
+  /**
+   * Returns the current ActionContext for the active terminal instance.
+   * Called at dispatch time so context reflects live state (e.g., sessionId
+   * may change after pty_open resolves). Required for Group A handler dispatch.
+   */
+  getActionContext?: () => ActionContext | null;
 }
